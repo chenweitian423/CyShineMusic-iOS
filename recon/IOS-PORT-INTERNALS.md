@@ -241,7 +241,7 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 |---|---|---|
 | 扫全盘音乐 | `MANAGE_EXTERNAL_STORAGE` | ❌ 沙盒；只能 App Documents + 用户文档选择器授权的目录 |
 | 应用内自更新 | 下载 APK 安装 | ❌ 只能跳 App Store |
-| 换图标 | `activity-alias` 无提示切换 | ⚠️ `setAlternateIconName`，图标须预打包 + Info.plist 声明，**切换会弹系统提示** |
+| 换图标 | `activity-alias` 无提示切换 | ⚠️ `setAlternateIconName`；图标必须走**资产目录**（见第 8 节 #32），**切换会弹系统提示** |
 | 媒体库扫描 | `MediaScannerConnection` | ❌ 无等价机制（`media_scan.scan` 直接返回 true） |
 | 主 App 驱动桌面卡片 | `AppWidget` RemoteViews | ⚠️ WidgetKit 跑在独立进程，只能经 App Group 共享数据；**免费签名没有 App Groups 能力** → 小组件停在引导态（灵动岛不受影响，见第 8 节 #29） |
 | 灵动岛 / 实时活动 | ❌ 无对应机制 | ✅ ActivityKit（iOS 16.2+）；传输按钮用 `Link` 回调 App，代价是会切前台 |
@@ -257,9 +257,10 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 项 | 文件 |
 |---|---|
 | iOS 工程生成 + Bundle ID 改为 `com.cyshine.music` | `ios/` |
-| Info.plist：后台音频、文件共享、备用图标声明、ATS、文档类型 | `ios/Runner/Info.plist` |
-| AppDelegate / SceneDelegate：注册 Runner 插件 + 外部音频回调 | `ios/Runner/AppDelegate.swift`、`SceneDelegate.swift` |
+| Info.plist：后台音频、文件共享、ATS、文档类型（**不含任何图标键**） | `ios/Runner/Info.plist` |
+| AppDelegate / SceneDelegate：注册 Runner 插件 + 外部音频回调 + `cyshinemusic://` 深链 | `ios/Runner/AppDelegate.swift`、`SceneDelegate.swift` |
 | Runner 6 通道 iOS 实现 | `ios/Runner/CyShineNativePlugin.swift` |
+| 原生 → Dart 日志桥（把原生失败暴露到 App 内「日志」页） | `ios/Runner/CyShineNativeLog.swift` + `lib/core/services/native_log_bridge.dart` |
 | bass_player iOS：通道全方法 + 事件流 + biquad 均衡器 + BASS 同步点 | `packages/bass_player/ios/` |
 | music_source_runtime iOS：双通道 + 8 native 函数 + JSCore + 定时器 | `packages/music_source_runtime/ios/` |
 | music_home_widget iOS：通道 + App Group 写入 + WidgetCenter 刷新 | `packages/music_home_widget/ios/` |
@@ -294,15 +295,15 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 优先级 | 事项 | 说明 |
 |---|---|---|
 | ~~P0~~ | ~~真机运行联调~~ | ✅ 已完成。真机已装上并跑起来；导入音源超时、搜歌播放、点状态栏不回顶三个 bug 已修 |
-| ~~P0~~ | ~~WidgetKit 卡片 UI + 灵动岛~~ | ✅ 已完成，见 6.4 |
+| ~~P0~~ | ~~WidgetKit 卡片 UI + 灵动岛~~ | ✅ 代码已完成，见 6.4；但**真机仍不显示**，本轮加了诊断待复测 |
+| **P0** | **灵动岛真机复测**（当前卡点） | 本轮已做：原生失败回灌日志页、扩展 plist 补 `NSSupportsLiveActivities`、开关改成「播放时重试」、扩展版本对齐。复测时看日志页 `live-activity`：会写出「开关 / 活动数 / 扩展在不在 PlugIns / 发起失败原因」 | 
+| **P0** | **侧载能否支持扩展的定性** | 免费签名的侧载工具若不给 `.appex` 配 App ID 或重签时丢掉 `PlugIns/`，扩展根本加载不了 → 灵动岛与桌面小组件一起失效。**判据**：桌面长按 → 添加小组件 → 搜索「栖弦」。搜不到 = 扩展没加载，与代码无关（见第 8 节 #36） |
 | P1 | iOS 写 mp3 标签 | 现在对非 ISO-BMFF 格式**明确报错**（不写坏文件）。方案：引入 `pod 'ID3TagEditor', '~> 5.5'`（纯 Swift，支持 ID3 读写 + 内嵌图）或 TagLib |
 | P1 | ISO-BMFF（m4a）标签写入 | `CyShineNativeTaggerChannel.writeTags` 里留了分支，需接 `AVAssetExportSession` 元数据重写 |
-| P1 | 真机核验灵动岛 | 出包后要在「设置 → 栖弦 → 实时活动」里确认已开启；灵动岛展开态才有传输按钮 |
 | P2 | App Group entitlement（桌面小组件的真实数据） | `group.com.cyshine.music` 需要**付费账号**的 App Groups 能力；免费签名拿不到，小组件会停在引导态（已降级，不白屏）。灵动岛不受影响 |
 | P2 | 灵动岛的封面 | 同上：封面走 App Group，没能力时回退到内置音符占位图 |
 | P2 | `audio_intent` 的 `openAudio` | 现在用 `UIActivityViewController`（分享面板）；Android 是 `ACTION_VIEW` 选播放器，iOS 只能这样 |
 | P3 | 本地曲库的目录授权 UI | 原生已提供 `addRoot`/`removeRoot`（bookmark 持久化），但 Dart 侧的 `storage_folder_picker_sheet` 还没有 iOS 分支去调它 |
-| P3 | 备用图标的真机验证 | 图标已按 bundle 根目录放置（见第 8 节 #14），需在真机上确认 `setAlternateIconName` 能切 |
 | P3 | `ScrollView.keyboardDismissBehavior` | 默认 `manual`，iOS 用户习惯 `onDrag`（第 8 节 #23） |
 
 > 注：`lib/features/player/music_home_widget_service.dart:44` 的
@@ -358,8 +359,8 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 命令 | 期望 |
 |---|---|
 | `bash tool/fetch_bass_ios.sh` | 输出 6 个 `Frameworks/*.xcframework` + 6 个头文件；无 `[warn] 缺少头文件` |
-| `bash tool/fetch_app_icons.sh` | `共生成 15 个文件` |
-| `python3 tool/patch_xcodeproj.py` | `[ok] Swift 1 个 + 图标 15 个 -> 引用校验通过`；重复执行同样输出（幂等） |
+| `bash tool/fetch_app_icons.sh` | `主图标 19 个` + `备用图标 90 个`（5 套 × 18）+ `兜底副本 15 个` |
+| `python3 tool/patch_xcodeproj.py` | `[ok] Swift 4 个 + 图标 15 个 -> 引用校验通过`；重复执行同样输出（幂等） |
 | `dart analyze lib packages` | 1 issue（上游既有的 onReorder 弃用） |
 | `diff android/app/src/main/assets/music_source_preload.js packages/music_source_runtime/ios/Resources/music_source_preload.js` | 无输出 |
 
@@ -370,26 +371,31 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | Setup Flutter | 装 3.47.7 |
 | Fetch BASS iOS binaries | 6 个 xcframework |
 | Verify preload.js parity | md5 一致 |
-| Prepare iOS alternate icons | 15 个 PNG |
+| Prepare iOS alternate icons | 主 19 + 备用 90 + 兜底 15 个 PNG |
+| **Resolve iOS version** | 读 `tool/ios_version.txt`；非法内容直接失败 |
+| Ensure Xcode project wiring | pbxproj 引用 + 部署目标 + 资产目录图标构建设置 |
 | Analyze | 1 issue（同上） |
 | Pod install | 3 个本地 pod 全部 Installing，无「未找到 BASS iOS 二进制」 |
 | Dump pod link settings | 诊断输出（失败时用） |
 | Build iOS (no codesign) | success |
-| Build & embed widget extension | `[ok] 扩展已嵌入`，`lipo -info` 输出 arm64 |
-| Verify embedded extension | `PlugIns/CyShineMusicWidget.appex` + 主二进制 + `com.apple.widgetkit-extension` 三项都在 |
-| Package / Upload unsigned IPA | `CyShineMusic-unsigned.ipa`（带扩展后约 +0.1 MB） |
+| Build & embed widget extension | `[ok] 扩展已嵌入`，`lipo -info` 输出 arm64，并打印注入后的版本号 |
+| Verify embedded extension | `PlugIns/CyShineMusicWidget.appex` + 主二进制 + `com.apple.widgetkit-extension` + `NSSupportsLiveActivities` + **扩展与主 App 的 `CFBundleVersion` 相等** |
+| Verify alternate app icons | **告警级**（不拦出包）：打印 `CFBundleIcons` 与 `Assets.car` 里的图标集，能一眼看出 Xcode 有没有采纳 |
+| Package / Upload unsigned IPA | `CyShineMusic-unsigned.ipa`，Step summary 带版本号 |
 
 ### 7.3 产物自检（已做过一次，可复现）
 
 | 检查 | 期望 |
 |---|---|
 | `unzip -l *.ipa \| grep Frameworks/` | 含 `bass/bassflac/bassape/bassopus/basswv/bassdsd` + 3 个插件 framework |
-| IPA 内 `Info.plist` | `CFBundleIdentifier=com.cyshine.music`、`CFBundleDisplayName=栖弦`、`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项 |
-| `Payload/Runner.app/` 根目录 | 有 `icon_midnight.png` / `@2x` / `@3x` 等 15 个（**不能在 Icons/ 子目录里**） |
+| IPA 内 `Info.plist` | `CFBundleIdentifier=com.cyshine.music`、`CFBundleDisplayName=栖弦`、`UIBackgroundModes=[audio,fetch]` |
+| IPA 内 `Info.plist` 的 `CFBundleIcons` | `CFBundlePrimaryIcon.CFBundleIconName=AppIcon`；`CFBundleAlternateIcons` 有 5 项 `AppIcon<Name>`（**由 Xcode 从资产目录生成，不是手写的**） |
+| `Payload/Runner.app/Assets.car` | 用 `assetutil --info` 能看到 5 个备用图标集 |
 | `music_source_runtime.framework/music_source_preload.js` | 存在 |
-| `Payload/Runner.app/PlugIns/CyShineMusicWidget.appex/` | 存在 `CyShineMusicWidget` 主二进制 + `Info.plist`（`NSExtensionPointIdentifier=com.apple.widgetkit-extension`） |
+| `Payload/Runner.app/PlugIns/CyShineMusicWidget.appex/` | 存在 `CyShineMusicWidget` 主二进制 + `Info.plist`（`NSExtensionPointIdentifier=com.apple.widgetkit-extension`、`NSSupportsLiveActivities=true`） |
 | IPA 内 `Info.plist` | 另含 `NSSupportsLiveActivities=true`、`CFBundleURLTypes` 里有 `cyshinemusic` |
 | `MinimumOSVersion`（App 与 appex） | 两边都是 16.2 |
+| `CFBundleShortVersionString` / `CFBundleVersion`（App 与 appex） | 两边一致；version 来自 `tool/ios_version.txt`，build 来自 CI run number |
 
 ---
 
@@ -536,6 +542,53 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
     所以有没有能力都能用。
 30. **iOS 部署目标已提到 16.2**（见 #24）。代价是放弃 iOS 15 及更低设备。
     取而代之的好处是：Runner 侧可以直接写 ActivityKit 而不用到处加 `@available` 守卫。
+31. ★★★ **原生的失败必须自己回灌给 Dart，否则真机上是彻底的盲区。**
+    `NSLog` 在 Release 包上不落 App 内的「日志」页。实时活动第一次没显示时，
+    Dart 侧只有一句「推送失败」，原生那边 `Activity.request` 抛了什么谁也不知道 ——
+    白折腾好几轮。现在有 `ios/Runner/CyShineNativeLog.swift`（通道
+    `cy_shine_music/native_log`），原生关键失败与诊断都经它进 `AppLogger`。
+    **新写任何原生失败路径时，记得也往这里写一条。**
+32. ★★★ **备用图标不要手工往 `Info.plist` 写 `CFBundleIcons` / `CFBundleAlternateIcons`。**
+    散装 PNG + 手工声明这条路（曾经能用）在较新的 Xcode / iOS 上会**静默失效**：
+    `setAlternateIconName` 直接报错，或更隐蔽地 —— `supportsAlternateIcons`
+    返回 `false`，看起来像「设备不支持」。正确做法（Xcode 官方路径）：
+
+    | 环节 | 做法 |
+    |---|---|
+    | 图标 | `ios/Runner/Assets.xcassets/AppIcon<Name>.appiconset/`（含 `Contents.json`） |
+    | 声明 | 构建设置 `ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky …"` |
+    | 编译 | 必须同时有 `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES`，否则 actool 只编主图标，备用图标集被整个丢掉 |
+    | plist | **不要手写**；Xcode 打包时自动生成 `CFBundleIcons` / `CFBundleAlternateIcons` |
+
+    三处名字（appiconset 目录名 / 构建设置 / Swift 里的候选名）必须逐字一致。
+    散装 PNG 仍留在 `ios/Runner/Icons/`（不进包）作为兜底：万一某个 Xcode 不吃
+    `ALTERNATE_APPICON_NAMES`，把手工 plist 块加回去即可，不用重新生成图标。
+33. **扩展与主 App 的 `CFBundleVersion` 必须一致。** 手工组装 `.appex` 时要显式
+    写进去（`build_widget_extension.sh` 读 `IOS_BUILD_NAME` / `IOS_BUILD_NUMBER`），
+    否则 iOS 拒绝加载扩展 —— 症状是「灵动岛与桌面小组件一起消失」，而且没有明显报错。
+34. ★★ **扩展 `Info.plist` 也要写 `NSSupportsLiveActivities`。** 官方文档只要求主 App，
+    但只写主 App 时会出现「`Activity.request` 成功、灵动岛不渲染」的静默失败。
+    Flutter 的 `live_activities` 插件文档同样要求两边都写。
+35. **实时活动的可用性开关要能「后开」生效。** 系统设置里
+    「设置 → 栖弦 → 实时活动」可以随时改变。如果只在 `main()` 里检查一次，
+    用户先播放、后去开开关，就必须重启 App —— 表现成「灵动岛怎么都不出现」。
+    现在每次播放状态变化都重试一次 `isSupported`（代价是一次轻量通道调用）。
+36. **侧载工具可能丢掉 `PlugIns/`。** 免费签名的 AltStore / SideStore 重签时会
+    连带处理 app 扩展，但如果用户在签名界面取消勾选，或工具版本有 bug，
+    `.appex` 就没了 —— 灵动岛与桌面小组件一起失效。所以诊断里加了
+    「扩展是否真的在 `Bundle.main.builtInPlugInsURL` 里」这一条，用户截个日志就能定性。
+37. ★★★ **前台运行的 App 永远不会显示自己的实时活动。** 这是 iOS 的设计：
+    自己的 App 在前台时占着整个显示区域，灵动岛会收起来。
+    **必须在 App 里发起活动后回到桌面 / 锁屏，才能看到**。
+    「`Activity.request` 成功」不等于「有人看到了」。
+    这一条极容易被误判成「功能没做出来」—— 用户第一次反馈「灵动岛不显示」时，
+    他给的就是 App 内日志页的截图（App 正在前台）。
+38. ★★ **灵动岛是 iPhone 14 Pro 及以上的硬件。** 刘海屏机型
+    （iPhone 13 及更早、14/15/16 非 Pro）实时活动**只在锁屏与通知中心**出现，
+    灵动岛位置永远是空的。诊断里特意把 `iOS 版本` 打出来了，但机型要用户自己核对。
+39. **锁屏要显示实时活动，还要一个单独的开关**：
+    设置 → 面容 ID 与密码 → 锁定时允许访问 → 实时活动。
+    只打开「设置 → 栖弦 → 实时活动」时，锁屏可能仍然不显示。
 
 ---
 
@@ -558,44 +611,49 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 assets/app_icons/classic.png        1024x1024，唯一源文件（正方形、不透明）
         │
         ├─ tool/fetch_app_icons.py 解析 AppIcon.appiconset/Contents.json
-        │   → ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png   主图标 15 个文件
+        │   → ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png        主图标
         │
-        └─ 同脚本做 HSV 色相迁移
-            → ios/Runner/Icons/icon_<variant>[@2x|@3x].png          备用图标 5 套 × 3 档
+        ├─ 同脚本做 HSV 色相迁移 → 5 套备用图标**资产目录集**（真正生效的那份）
+        │   → ios/Runner/Assets.xcassets/AppIcon<Name>.appiconset/*.png
+        │
+        └─ 同脚本再写一份散装副本（兜底，默认不进包）
+            → ios/Runner/Icons/icon_<variant>[@2x|@3x].png
 ```
 
 **6 套图标的配色**（备用图标由主图标派生；白色音符饱和度≈0，所以清一色保持纯白）：
 
-| variant | 显示名 | hue(0-255) | sat | val |
-|---|---|---|---|---|
-| classic | 经典绿 | — | — | — |
-| midnight | 午夜蓝 | 148 | 0.95 | 0.72 |
-| sky | 晴空蓝 | 136 | 0.90 | 1.06 |
-| lavender | 雾紫 | 186 | 0.85 | 0.98 |
-| mint | 薄荷青 | 108 | 0.70 | 1.10 |
-| peach | 暖桃粉 | 12 | 0.85 | 1.05 |
+| variant | 显示名 | hue(0-255) | sat | val | 资产目录图标集名 |
+|---|---|---|---|---|---|
+| classic | 经典绿 | — | — | — | `AppIcon`（主图标） |
+| midnight | 午夜蓝 | 148 | 0.95 | 0.72 | `AppIconMidnight` |
+| sky | 晴空蓝 | 136 | 0.90 | 1.06 | `AppIconSky` |
+| lavender | 雾紫 | 186 | 0.85 | 0.98 | `AppIconLavender` |
+| mint | 薄荷青 | 108 | 0.70 | 1.10 | `AppIconMint` |
+| peach | 暖桃粉 | 12 | 0.85 | 1.05 | `AppIconPeach` |
 
 预览图：`recon/icon-family.png`
 
 **几条硬约束：**
 
 1. 主图标的尺寸需求写在 `AppIcon.appiconset/Contents.json`，脚本按 `size × scale` 算像素，
-   不硬编码 —— 上游改了 Contents.json 也不用改脚本。
+   不硬编码 —— 上游改了 Contents.json 也不用改脚本。备用图标集的 `Contents.json`
+   直接复用主图标的 entries（**去掉 `ios-marketing`**：备用图标不需要 1024，带上可能被 actool 判非法）。
 2. **写出的 PNG 不带 alpha 通道**（color type 2）。App Store Connect 会因 alpha 拒绝图标，
    我们的图全部不透明。
-3. `Runner/Icons/` 里的文件必须**平铺拷到 `Runner.app/` 根目录**
-   （`CFBundleIconFiles` 在 bundle 根找图），所以 `patch_xcodeproj.py` 是按单个文件加入，
-   不能用文件夹引用。
+3. **备用图标走资产目录，不再依赖 `Runner.app/` 根目录的散装 PNG。** 见踩坑 #32：
+   手工往 `Info.plist` 写 `CFBundleIcons` 在新 Xcode / 新 iOS 上会静默失效。
+   `Runner/Icons/` 只作兜底保留，不需要接进 Copy Bundle Resources。
 4. **不要往 `ios/Runner/Icons/` 放非图标 PNG**（比如预览图）——
-   `patch_xcodeproj.py` 会 glob 该目录下所有 `*.png` 并全部打进 app bundle。
-   预览图之类要放 `recon/`。
+   该目录仍被 `patch_xcodeproj.py` glob，多余文件会被打进 app bundle。预览图放 `recon/`。
 5. 脚本只用标准库（`zlib`/`struct`/`colorsys`）：CI 的 macOS runner 上的 python3
    没有 Pillow，必须能在裸环境跑。
-6. **备用图标增删/改名时四处要同时改**：
-   `tool/fetch_app_icons.py` 的 `ALTERNATES`、
-   `ios/Runner/Info.plist` 的 `CFBundleAlternateIcons`、
-   `ios/Runner/CyShineNativePlugin.swift` 的 `CyShineAppIconChannel.alternateNames`、
+6. **备用图标增删/改名时五处要同时改**（改漏任何一处都会「图标能在设置里选、但点了没反应」）：
+   `tool/fetch_app_icons.py` 的 `ALTERNATES` 第 4 列、
+   `tool/patch_xcodeproj.py` 的 `ALTERNATE_APPICON_NAMES`、
+   `ios/Runner/CyShineNativePlugin.swift` 的 `CyShineAppIconChannel.alternateCandidates`
+   与 `codeByIconName`、
    `lib/core/services/app_icon_service.dart` 的 `AppIconVariant` 枚举。
+   `Info.plist` **不用动**（由 Xcode 生成）。
 
 ---
 
@@ -619,3 +677,21 @@ assets/app_icons/classic.png        1024x1024，唯一源文件（正方形、�
 
 **发新版本的流程**：CI 出包 → 下载 artifact → 取 `.ipa` →
 `gh release create <tag> <ipa路径> -R chenweitian423/CyShineMusic-iOS -t "<标题>" -F <说明文件> --latest`。
+
+---
+
+## 11. iOS 版本号体系（与上游解耦）
+
+用户明确要求：「iOS 本来就是独立的，没必要一直是一个版本」。
+
+| 项 | 来源 | 说明 |
+|---|---|---|
+| `CFBundleShortVersionString` | `tool/ios_version.txt`（**唯一来源**，手工维护） | iOS 从 `2.0.0` 起独立编号，不再跟上游 Android 的 `1.0.8` |
+| `CFBundleVersion` | CI 的 `github.run_number` | 自动单调递增，每次出包都不同；不用管 |
+| Widget 扩展的两个版本 | `IOS_BUILD_NAME` / `IOS_BUILD_NUMBER` 环境变量 | **必须与主 App 一致**，否则 iOS 拒绝加载扩展（见第 8 节 #33） |
+| Release tag | `ios-v<CFBundleShortVersionString>` | 例：`ios-v2.0.0`；标题里带 build number |
+| 本地出包 | `--build-name=$(cat tool/ios_version.txt) --build-number=<任意递增数>` | 见 `ios/README-IOS.md` 3.1 |
+
+发版时只需改 `tool/ios_version.txt` 一个地方。
+CI 有一步 `Resolve iOS version` 会校验内容必须是 `x` / `x.y` / `x.y.z`，
+写错直接失败，不会产出「版本号为空」的包。
