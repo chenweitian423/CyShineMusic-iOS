@@ -25,6 +25,7 @@ class AppLogger {
   static final sessionId = '${DateTime.now().microsecondsSinceEpoch}-$pid';
   static String _environment = 'environment=unavailable';
   static String _androidDiagnostics = 'unavailable';
+  static String _iosDiagnostics = 'unavailable';
 
   static Future<void> logEnvironment() async {
     final environment = <String, Object?>{
@@ -52,26 +53,39 @@ class AppLogger {
     await logAndroidDiagnostics('startup');
   }
 
+  /// 方法名沿用上游（改名字会平添一处 rebase 冲突），但两端都跑：
+  /// 原生 `cy_shine_music/app_task.diagnostics` 在 Android 与 iOS 上都已经实现，
+  /// 上游只是没给 iOS 开门。放开后日志页能直接看到
+  /// 机型 / 系统版本 / 通知开关 / 低电量模式 —— 排查「灵动岛为什么不显示」时，
+  /// 「通知开关」这一项尤其关键（见 CyShineLiveActivityBridge 的说明）。
   static Future<void> logAndroidDiagnostics(String reason) async {
-    if (!Platform.isAndroid) return;
+    final scope = Platform.isAndroid
+        ? 'android-runtime'
+        : (Platform.isIOS ? 'ios-runtime' : null);
+    if (scope == null) return;
+    final String json;
     try {
       final data = await const MethodChannel('cy_shine_music/app_task')
           .invokeMapMethod<String, dynamic>('diagnostics')
           .timeout(const Duration(seconds: 2));
-      _androidDiagnostics = jsonEncode(data);
-      await write(
-        'android-runtime',
-        'reason=$reason data=$_androidDiagnostics',
-      );
+      json = jsonEncode(data);
     } catch (error) {
-      await write('android-runtime', 'reason=$reason unavailable=$error');
+      await write(scope, 'reason=$reason unavailable=$error');
+      return;
     }
+    if (Platform.isIOS) {
+      _iosDiagnostics = json;
+    } else {
+      _androidDiagnostics = json;
+    }
+    await write(scope, 'reason=$reason data=$json');
   }
 
   static String exportText(List<String> lines) =>
       '${DateTime.now().toIso8601String()} [log-export] session=$sessionId '
       'pid=$pid environment=$_environment '
-      'lastAndroidSnapshot=$_androidDiagnostics\n${lines.join('\n')}';
+      'lastAndroidSnapshot=$_androidDiagnostics '
+      'lastIosSnapshot=$_iosDiagnostics\n${lines.join('\n')}';
 
   static Future<void> _ensureInit() => _initFuture ??= _initialize();
 

@@ -24,6 +24,7 @@ import ActivityKit
 import Flutter
 import Foundation
 import UIKit
+import UserNotifications
 
 @available(iOS 16.2, *)
 final class CyShineLiveActivityBridge: NSObject {
@@ -57,6 +58,8 @@ final class CyShineLiveActivityBridge: NSObject {
     // 进程启动时清掉上次残留的活动（避免灵动岛上挂着一条已经过期的）
     instance.endOrphanedActivities()
     instance.observeForeground()
+    // 先把通知授权状态查一遍存起来，诊断里就能直接看到"通知=?"
+    Self.refreshNotificationStatus()
     // 保持存活：通道回调是 weak 的，所以这里让 AppDelegate 侧持有
     shared = instance
   }
@@ -97,6 +100,9 @@ final class CyShineLiveActivityBridge: NSObject {
         result(false)
         return
       }
+      // 实时活动的显示依赖通知授权，而上游是纯 Android 项目、从没问过这个权限。
+      // 在首次发起活动（= 首次播放）时问一次，别在冷启动就弹窗打扰。
+      Self.ensureNotificationAuthorization()
       if UIApplication.shared.applicationState == .active {
         applyStart(args, result: result)
       } else {
@@ -124,24 +130,113 @@ final class CyShineLiveActivityBridge: NSObject {
     }
   }
 
+  /// 最近一次查到的通知授权状态。`getNotificationSettings` 是异步的，
+  /// 而诊断常常在同步路径上被读，所以这里缓存一份，不阻塞主线程。
+  private static var notificationStatus = "未查询"
+  private static var didRequestNotificationAuthorization = false
+
+  /// 灵动岛是 iPhone 14 Pro 及以上的硬件。刘海屏机型（含 14/15/16 非 Pro）
+  /// 的实时活动只出现在锁屏与通知中心 —— 这不是 bug，是硬件差异。
+  /// 新机型没收录时按「支持」处理，避免误判成不支持。
+  private static let dynamicIslandModels: Set<String> = [
+    "iPhone15,2", "iPhone15,3",    // iPhone 14 Pro / Pro Max
+    "iPhone16,1", "iPhone16,2",    // iPhone 15 Pro / Pro Max
+    "iPhone17,1", "iPhone17,2",    // iPhone 16 Pro / Pro Max
+    "iPhone18,1", "iPhone18,2",    // iPhone 17 Pro / Pro Max（预留）
+  ]
+
+  private static func modelIdentifier() -> String {
+    var systemInfo = utsname()
+    uname(&systemInfo)
+    let mirror = Mirror(reflecting: systemInfo.machine)
+    let identifier = mirror.children.reduce(into: "") { acc, element in
+      guard let value = element.value as? Int8, value != 0 else { return }
+      acc.append(Character(UnicodeScalar(UInt8(value))))
+    }
+    return identifier.isEmpty ? "unknown" : identifier
+  }
+
+  private static func deviceDescription() -> String {
+    let model = modelIdentifier()
+    guard model.hasPrefix("iPhone") else {
+      // iPad 没有灵动岛，实时活动只出现在锁屏。
+      return "\(model)(非 iPhone，无灵动岛)"
+    }
+    if dynamicIslandModels.contains(model) {
+      return "\(model)(灵动岛机型)"
+    }
+    // 型号没收录时按支持处理，只提示一声，不误判。
+    return "\(model)(未收录型号)"
+  }
+
+  /// 刷新缓存的通知授权状态。只写缓存、不弹窗、不阻塞。
+  private static func refreshNotificationStatus() {
+    UNUserNotificationCenter.current().getNotificationSettings { settings in
+      Self.notificationStatus = Self.describe(settings.authorizationStatus)
+    }
+  }
+
+  private static func describe(_ status: UNAuthorizationStatus) -> String {
+    switch status {
+    case .authorized: return "已授权"
+    case .denied: return "被拒绝（实时活动不会显示，去设置里打开）"
+    case .notDetermined: return "未询问"
+    case .provisional: return "临时授权"
+    case .ephemeral: return "临时(App Clip)"
+    @unknown default: return "未知"
+    }
+  }
+
+  /// ★ 实时活动要显示，App 必须有通知授权（iOS 17 起「实时活动」开关就挂在
+  ///   App 的通知设置里）。上游是纯 Android 项目，从来没有请求过这个权限，
+  ///   侧载后授权状态一直是 notDetermined —— 这是「灵动岛怎么都不出现」的
+  ///   高概率根因。放在首次发起活动（= 首次播放）时问一次，不打扰冷启动。
+  static func ensureNotificationAuthorization() {
+    guard didRequestNotificationAuthorization == false else { return }
+    didRequestNotificationAuthorization = true
+    UNUserNotificationCenter.current().requestAuthorization(
+      options: [.alert, .sound, .badge]
+    ) { granted, error in
+      Self.notificationStatus = granted ? "已授权" : "被拒绝"
+      CyShineNativeLog.write(
+        "live-activity",
+        "通知授权结果 granted=\(granted) error=\(error?.localizedDescription ?? "无")"
+      )
+      Self.refreshNotificationStatus()
+    }
+  }
+
   /// 一次性的环境诊断。用来区分「没打进包」和「打进包但系统不给显示」。
   static func diagnostics() -> String {
     var parts: [String] = []
     parts.append("iOS \(UIDevice.current.systemVersion)")
+    parts.append("机型=\(deviceDescription())")
     parts.append("开关=\(ActivityAuthorizationInfo().areActivitiesEnabled)")
+    parts.append("通知=\(notificationStatus)")
     parts.append("在跑的活动=\(Activity<CyShineActivityAttributes>.activities.count)")
 
     // 扩展是否真的躺在包里 —— 侧载工具重签时把 PlugIns 丢了的话，这里会是缺失。
     let plugIns = Bundle.main.builtInPlugInsURL
     let appex = plugIns?.appendingPathComponent("CyShineMusicWidget.appex")
     let executable = appex?.appendingPathComponent("CyShineMusicWidget")
+    var hasBundle = false
+    var appexIdentifier = "?"
     if let appex, let executable {
-      let hasBundle = FileManager.default.fileExists(atPath: appex.path)
+      hasBundle = FileManager.default.fileExists(atPath: appex.path)
       let hasBinary = FileManager.default.fileExists(atPath: executable.path)
       parts.append("扩展=\(hasBundle ? "在" : "缺失")/\(hasBinary ? "二进制在" : "二进制缺失")")
+      appexIdentifier = Bundle(url: appex)?.bundleIdentifier ?? "?"
     } else {
       parts.append("扩展=无法定位 PlugIns")
     }
+
+    // ★ 侧载重签时最容易踩的一条：工具只把主 App 的 bundle id 换成自己的，
+    //   扩展的 id 没跟着改 → 前缀不匹配 → iOS 直接拒绝加载扩展，
+    //   表现为「灵动岛不显示 + 桌面搜不到小组件」，而主 App 一切正常。
+    let appIdentifier = Bundle.main.bundleIdentifier ?? "?"
+    let prefixMatched = appexIdentifier.hasPrefix("\(appIdentifier).")
+    let bundleNote = (hasBundle && !prefixMatched) ? " ⚠前缀不匹配，扩展会被拒绝加载" : ""
+    parts.append("Bundle=\(appIdentifier)/\(appexIdentifier)\(bundleNote)")
 
     let group = FileManager.default.containerURL(
       forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)
