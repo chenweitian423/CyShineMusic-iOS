@@ -95,10 +95,39 @@ git push origin ios        # 或手动触发 workflow_dispatch
 
 ## 4. 当前状态（构建前务必先看）
 
-`recon/IOS-PORT-INTERNALS.md` 里有完整的「已完成 / 未完成」清单。简要：
+**编译链路已在 GitHub Actions（macOS runner）上完整跑通并产出未签名 IPA。**
+仓库：`https://github.com/chenweitian423/CyShineMusic-iOS`，分支 `ios`。
+Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`。
+产物约 **11.9 MB**，已核实内嵌 `bass / bassflac / bassape / bassopus / basswv / bassdsd`
+与三个插件 framework，`music_source_preload.js`、15 个备用图标、Info.plist 各项均正确。
 
-- ✅ 编译链路齐备（三个插件都已声明 iOS 平台并有真实实现，不是空壳）
-- ✅ 音频播放、音源解析、歌词、歌单、搜索、主题、WebDAV 同步：Dart 层原样复用
-- ⚠️ 首次在 macOS 上编译大概率需要修几个 Swift 编译错误（本地是 Windows，无法预先编译验证）
-- ⚠️ iOS 写 mp3 标签未实现（会明确报错，不会写坏文件）；FLAC 与 m4a 可用
-- ⚠️ WidgetKit 桌面小组件只做了数据桥，卡片 UI 未做
+已实现的功能面：
+
+| 能力 | 状态 |
+|---|---|
+| 在线检索 / 音源解析 / 播放 / 歌词 / 歌单 / 搜索 / 主题 / WebDAV 同步 | ✅ Dart 层原样复用 |
+| 自定义音源（JS 运行时 + 8 个 native 函数） | ✅ 已实现（JavaScriptCore） |
+| 音频播放（BASS，含自研 biquad 均衡器） | ✅ 已实现 |
+| 后台播放 / 锁屏控制 | ✅ Info.plist 已配 `UIBackgroundModes: audio` |
+| 外部音频文件导入 | ✅ 已实现 |
+| 备用图标（5 套） | ✅ 已实现（切换有系统提示，且需放开 `app_icon_service` 的平台判断——已改） |
+| 本地曲库 | ⚠️ 只能扫 App Documents + 用户授权目录（iOS 沙盒限制） |
+| 音频标签读写 | ⚠️ 读全格式可用；写仅 m4a 可用，FLAC 走纯 Dart；**写 mp3 暂不支持，会明确报错而不是写坏文件** |
+| 桌面小组件 | ⚠️ 数据桥已做，WidgetKit 卡片 UI 未做 |
+
+**还没做的验证：真机运行。** 需要一台 iPhone + AltStore/SideStore 自签安装后实测。
+
+---
+
+## 5. 编译时踩过的坑（改代码前先看，能省几轮 CI）
+
+| 现象 | 原因与对策 |
+|---|---|
+| 链接期 34 个 `Undefined symbol: _BASS_*` | CocoaPods 的 `vendored_frameworks` 在这个组合下**不会**生成 `-framework` 链接参数。podspec 里必须显式给 `FRAMEWORK_SEARCH_PATHS = $(PODS_TARGET_SRCROOT)/Frameworks` 与 `OTHER_LDFLAGS = -framework bass -framework bassflac ...`（见 `packages/bass_player/ios/bass_player.podspec`） |
+| `Method 'handle(_:result:)' must be declared public because it matches a requirement in public protocol 'FlutterPlugin'` | **不要把自己的方法命名成 `handle(_:result:)`**，Flutter 的 `FlutterPlugin` 协议里有个可选要求就叫这个名字。改名 `handleCall` |
+| 一串莫名的 `Call can throw, but it is not marked with 'try'` | Swift 在 `DispatchQueue.async` 嵌套下会把「传给 throwing 闭包参数的尾随闭包」误判成非 throwing。**别写 `helper { self.throwingCall() }` 这种形式**，改成在队列闭包里直接 `do/catch`（`BassPlayerPlugin.handleCall` 就是这么写的） |
+| `Cannot convert value of type 'Int' to expected argument type 'Int32'` | 字面量常量要显式声明类型：`private static let cancelledCode: Int32 = -1000` |
+| `Missing argument for parameter #6` 且指向 `BASS_DSD_*` | **`BASS_DSD_StreamCreateURL/File` 比其它附加库多一个 `freq` 参数**（0 = 保持源采样率）。flac/ape/wv/opus 都是 5 个参数，别照抄 |
+| `framework not found CommonCrypto` | iOS SDK 没有 `CommonCrypto.framework`，符号在 libSystem 里，Swift 直接 `import CommonCrypto` 即可。**不要**写进 podspec 的 `s.frameworks` |
+| `import CBass` 报 no such module | BASS 的 xcframework **不含头文件**，必须有 `Classes/CHeaders/{CBassShim.h,module.modulemap}` + podspec 里的 `SWIFT_INCLUDE_PATHS = $(PODS_TARGET_SRCROOT)/Classes/CHeaders` |
+| 备用图标在 iOS 上找不到 | 图标必须被拷贝到 **`Runner.app/` 根目录**，不能放在 `Runner.app/Icons/` 子目录里。所以 `tool/patch_xcodeproj.py` 是按**单个文件**加入 Copy Bundle Resources（不是文件夹引用） |

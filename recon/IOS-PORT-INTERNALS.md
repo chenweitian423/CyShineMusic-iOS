@@ -15,6 +15,16 @@ MainActivity.kt 里。
 
 因为**通道契约保持不变**，所以移植策略是「换原生实现，不动 Dart」，极大降低与上游 rebase 的冲突面。
 
+**编译状态：已在 GitHub Actions（macos-latest）上完整跑通并产出未签名 IPA。**
+远程仓库 `chenweitian423/CyShineMusic-iOS` 分支 `ios`，第 6 次运行
+（run 38875635382）success。产物 11.9 MB，已核实内嵌
+`bass/bassflac/bassape/bassopus/basswv/bassdsd` 六个 BASS framework、
+`bass_player/music_source_runtime/music_home_widget` 三个插件 framework、
+`music_source_runtime.framework/music_source_preload.js`、15 个备用图标、
+`Info.plist`（`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项）。
+
+**尚未验证：真机运行。** 需要 iPhone + AltStore/SideStore 自签后实测。
+
 ---
 
 ## 1. 上游基线
@@ -266,7 +276,7 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| P0 | **首次 macOS 编译修错** | 本机是 Windows，Swift 代码无法预先编译。大概率有若干编译错误要修（类型映射、API 可用性）。这是唯一还没验证过的一环 |
+| P0 | **真机运行联调** | CI 已能出包，但没在 iPhone 上跑过。首要验证：能否进首页、能否导入音源、能否播完一首歌 |
 | P0 | 放开 `music_home_widget_service.dart:44` 的平台守卫 | 否则 iOS 小组件永远收不到数据 |
 | P1 | iOS 写 mp3 标签 | 现在对非 ISO-BMFF 格式**明确报错**（不写坏文件）。方案：引入 `pod 'ID3TagEditor', '~> 5.5'`（纯 Swift，支持 ID3 读写 + 内嵌图）或 TagLib |
 | P1 | ISO-BMFF（m4a）标签写入 | `CyShineNativeTaggerChannel.writeTags` 里留了分支，需接 `AVAssetExportSession` 元数据重写 |
@@ -274,21 +284,44 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | P2 | App Group entitlement | `MusicHomeWidgetPlugin.appGroupIdentifier = "group.com.cyshine.music"`，需要在 Xcode 给 Runner 与 Widget target 都配 App Groups capability（本机无法生成 entitlements 文件） |
 | P2 | `audio_intent` 的 `openAudio` | 现在用 `UIActivityViewController`（分享面板）；Android 是 `ACTION_VIEW` 选播放器，iOS 只能这样 |
 | P3 | 本地曲库的目录授权 UI | 原生已提供 `addRoot`/`removeRoot`（bookmark 持久化），但 Dart 侧的 `storage_folder_picker_sheet` 还没有 iOS 分支去调它 |
+| P3 | 备用图标的真机验证 | 图标已按 bundle 根目录放置（见第 8 节倒数第 2 条），需在真机上确认 `setAlternateIconName` 能切 |
 
 ---
 
 ## 7. 验收命令与期望值
 
+### 7.1 本地（Windows 上可做的部分）
+
 | 命令 | 期望 |
 |---|---|
 | `bash tool/fetch_bass_ios.sh` | 输出 6 个 `Frameworks/*.xcframework` + 6 个头文件；无 `[warn] 缺少头文件` |
 | `bash tool/fetch_app_icons.sh` | `共生成 15 个文件` |
-| `python3 tool/patch_xcodeproj.py` | 首次输出 4 行 `[ok] ... xN`；重复执行输出 `[skip]` |
+| `python3 tool/patch_xcodeproj.py` | `[ok] Swift 1 个 + 图标 15 个 -> 引用校验通过`；重复执行同样输出（幂等） |
 | `dart analyze lib packages` | 1 issue（上游既有的 onReorder 弃用） |
 | `diff android/app/src/main/assets/music_source_preload.js packages/music_source_runtime/ios/Resources/music_source_preload.js` | 无输出 |
-| `cd ios && pod install` | 3 个本地 pod 全部 `Installing bass_player / music_source_runtime / music_home_widget`；无「未找到 BASS iOS 二进制」 |
-| `flutter build ios --release --no-codesign` | `build/ios/iphoneos/Runner.app` 存在 |
-| 真机首启 | 能进首页；能导入音源；`设置 → 关于` 里引擎版本显示 `2.4.x.y` + `builtin-biquad` |
+
+### 7.2 CI（macOS runner，已实测通过）
+
+| 步骤 | 期望 |
+|---|---|
+| Setup Flutter | 装 3.47.7 |
+| Fetch BASS iOS binaries | 6 个 xcframework |
+| Verify preload.js parity | md5 一致 |
+| Prepare iOS alternate icons | 15 个 PNG |
+| Analyze | 1 issue（同上） |
+| Pod install | 3 个本地 pod 全部 Installing，无「未找到 BASS iOS 二进制」 |
+| Dump pod link settings | 诊断输出（失败时用） |
+| Build iOS (no codesign) | success |
+| Package / Upload unsigned IPA | `CyShineMusic-unsigned.ipa` ≈ 11.9 MB |
+
+### 7.3 产物自检（已做过一次，可复现）
+
+| 检查 | 期望 |
+|---|---|
+| `unzip -l *.ipa \| grep Frameworks/` | 含 `bass/bassflac/bassape/bassopus/basswv/bassdsd` + 3 个插件 framework |
+| IPA 内 `Info.plist` | `CFBundleIdentifier=com.cyshine.music`、`CFBundleDisplayName=栖弦`、`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项 |
+| `Payload/Runner.app/` 根目录 | 有 `icon_midnight.png` / `@2x` / `@3x` 等 15 个（**不能在 Icons/ 子目录里**） |
+| `music_source_runtime.framework/music_source_preload.js` | 存在 |
 
 ---
 
@@ -309,6 +342,32 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 7. **`patch_xcodeproj.py` 的幂等判断不能用裸 ID**：ID 会先作为 `fileRef` 出现，
    导致中间的 `PBXFileReference` 步骤被误跳过（第一版就踩了，`project.pbxproj` 里少了文件引用定义）。
    必须用「完整定义字符串」判断。
+8. **Swift 侧 `handle(_:result:)` 是 `FlutterPlugin` 的可选协议要求**，撞名会报
+   「must be declared public because it matches a requirement in public protocol 'FlutterPlugin'」，
+   而且还会连带产生一串误导性的 `Call can throw` 报错。改名 `handleCall` 即可。
+   涉及两个文件：`BassPlayerPlugin`、`MusicHomeWidgetPlugin`。
+   （`MusicSourceRuntimePlugin` 里的同名方法是定义在非 FlutterPlugin 的辅助类上，所以没事。）
+9. **Swift 在 `DispatchQueue.async` 嵌套下会把「传给 throwing 闭包参数的尾随闭包」误判成非
+   throwing**，报一串 `Call can throw, but it is not marked with 'try'`。
+   对策：不要在 `async` 闭包里写 `helper(result) { self.throwingCall() }`，
+   直接在队列闭包里 `do/catch`。`BassPlayerPlugin.handleCall` 与
+   `MusicSourceRuntimePlugin` 现在都是这个写法。（有显式 `try` 的闭包不会踩，例如
+   `guardJS { try MusicSourceCrypto.md5(x) }` 一直是好的。）
+10. **`BASS_DSD_StreamCreateURL/File` 比其它附加库多一个 `freq` 参数**（0 = 保持源采样率）。
+    报错形如 `Missing argument for parameter #6`。flac/ape/wv/opus 都是 5 个参数。
+11. **`cancelledCode` 之类的字面量常量要显式声明 `Int32`**，否则会被推成 `Int` 而
+    `BassError.code`（`Int32`）不匹配。
+12. **`CommonCrypto` 不是独立 framework**，写进 podspec 的 `s.frameworks` 会导致
+    `framework not found CommonCrypto`。iOS SDK 里它只是个 modulemap，符号在 libSystem。
+13. **`vendored_frameworks` 在「Flutter Podfile(use_frameworks!) + 本地 path 插件 +
+   非标准 xcframework 切片名(ios-arm64_armv7_armv7s)」下不生成 `-framework` 链接参数**，
+    症状是链接期几十个 `Undefined symbol: _BASS_*`。必须在 `pod_target_xcconfig` 里显式给
+    `FRAMEWORK_SEARCH_PATHS`（指向含 `.xcframework` 的目录）与 `OTHER_LDFLAGS`。
+14. **备用图标必须落在 `Runner.app/` 根目录**。iOS 解析 `Info.plist` 的 `CFBundleIconFiles`
+    是在 bundle 根目录找图，放进 `Runner.app/Icons/` 会找不到。
+    所以 `patch_xcodeproj.py` 是按单个文件加入 Copy Bundle Resources（Xcode 会平铺拷贝），
+    而不是用「文件夹引用」（文件夹引用会保持子目录结构）。
+    脚本里带了迁移逻辑，会把早期版本的文件夹引用行删掉。
 
 ---
 
