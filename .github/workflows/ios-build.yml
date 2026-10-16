@@ -84,6 +84,29 @@ jobs:
           pod repo update || true
           pod install --verbose
 
+      # 链接失败时最难查的就是「pod 到底有没有把 BASS 链进来」。
+      # 这里把关键产物一次性打出来，失败时不用再来回试。
+      - name: Dump pod link settings (diagnostics)
+        run: |
+          set +e
+          echo "::group::BASS frameworks on disk"
+          ls -la packages/bass_player/ios/Frameworks/ 2>&1
+          find packages/bass_player/ios/Frameworks -maxdepth 2 -name 'Info.plist' 2>&1 | head -20
+          echo "::endgroup::"
+          echo "::group::Generated Podfile"
+          cat ios/Podfile 2>&1
+          echo "::endgroup::"
+          echo "::group::bass_player xcconfig (Release)"
+          cat "ios/Pods/Target Support Files/bass_player/bass_player.release.xcconfig" 2>&1
+          echo "::endgroup::"
+          echo "::group::Pods-Runner xcconfig (Release)"
+          cat "ios/Pods/Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig" 2>&1
+          echo "::endgroup::"
+          echo "::group::xcframeworks CocoaPods knows about"
+          grep -o "bass[a-z]*\.xcframework" ios/Pods/Pods.xcodeproj/project.pbxproj 2>&1 | sort -u
+          grep -c "vendored_frameworks\|XCFramework" ios/Pods/Pods.xcodeproj/project.pbxproj 2>&1
+          echo "::endgroup::"
+
       - name: Build iOS (no codesign)
         run: |
           flutter build ios --release --no-codesign

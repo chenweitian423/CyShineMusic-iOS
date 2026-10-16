@@ -41,6 +41,19 @@ com.cyshine.music/bass_player/events），因此 lib/ 层不需要任何改动�
     # 让 Swift 能 import CBass（module.modulemap 位于 Classes/CHeaders）。
     'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/Classes/CHeaders',
     'HEADER_SEARCH_PATHS' => '$(PODS_TARGET_SRCROOT)/Classes/CHeaders',
+    # 显式给出 xcframework 的搜索路径与链接参数。
+    #
+    # 为什么必须显式写：CocoaPods 的 vendored_frameworks 在
+    # 「Flutter Podfile（use_frameworks!）+ 本地 path 插件 + 非标准
+    # xcframework 切片名（ios-arm64_armv7_armv7s）」这个组合下，
+    # 只把资源纳入 embed，没有生成 -framework 链接参数，导致链接期
+    # 一堆 "Undefined symbol: _BASS_Init" 之类的错误。
+    # Xcode 12+ 支持把 FRAMEWORK_SEARCH_PATHS 指向包含 .xcframework 的目录，
+    # 再由 -framework 解析到正确切片，所以这两项同时给上最稳。
+    'FRAMEWORK_SEARCH_PATHS' => '$(inherited) "$(PODS_TARGET_SRCROOT)/Frameworks"',
+    'OTHER_LDFLAGS' =>
+      '$(inherited) -framework bass -framework bassflac -framework bassape ' \
+      '-framework bassopus -framework basswv -framework bassdsd',
     # BASS 的 xcframework 只带 arm64（真机）与 arm64+x86_64（模拟器）切片。
     'EXCLUDED_ARCHS[sdk=iphonesimulator*]' => 'i386 armv7',
     'CLANG_WARN_DOCUMENTATION_COMMENTS' => 'NO'
