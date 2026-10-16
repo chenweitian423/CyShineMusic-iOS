@@ -1,0 +1,954 @@
+import 'dart:async';
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../core/storage/settings_store.dart';
+import '../../core/ui/app_toast.dart';
+import '../../core/ui/cover_image_source.dart';
+import '../../theme/app_motion.dart';
+import '../player/player_page.dart';
+import '../player/widgets/spinning_cover_art.dart';
+import '../player/player_controller.dart';
+import '../playlists/playlist_detail_toolbar_state.dart';
+import '../search/search_controller.dart';
+import '../songs/songs_toolbar_state.dart';
+import 'player_pull_scope.dart';
+import 'player_transition.dart';
+import 'shell_bottom_area.dart';
+import 'shell_route_utils.dart';
+import 'shell_toolbar_visibility.dart';
+import 'tab_location_memory.dart';
+import 'widgets/bottom_toolbar.dart';
+import 'widgets/discovery_category_fab.dart';
+import 'widgets/dual_capsule_bottom_navigation.dart';
+import 'widgets/native_bottom_navigation.dart';
+import 'widgets/search_paging_fab.dart';
+import 'widgets/toolbar_metrics.dart';
+import 'widgets/toolbar_capsule.dart';
+
+class AppShell extends ConsumerStatefulWidget {
+  const AppShell({
+    super.key,
+    required this.child,
+    required this.location,
+    required this.routeLocation,
+    required this.playerReturnLocation,
+    required this.playlistBackLocation,
+  });
+
+  final Widget child;
+  final String location;
+  final String routeLocation;
+  final String playerReturnLocation;
+  final String playlistBackLocation;
+
+  @override
+  ConsumerState<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends ConsumerState<AppShell>
+    with TickerProviderStateMixin {
+  String _playerReturnLocation = '/songs';
+  late final AnimationController _toolbarRevealController;
+
+  /// Player reveal progress: 0 parks the player layer below the screen, 1
+  /// seats it. This is the single source of truth for entering, leaving and
+  /// dragging the player — the page itself never animates.
+  late final AnimationController _pull;
+  late final PlayerPullGestures _pullGestures;
+
+  /// Mounted lazily on first pull and never torn down again, so the backdrop's
+  /// async blur pipeline only ever runs its cold start once.
+  bool _playerLayerMounted = false;
+  bool _pullActive = false;
+  late final AnimationController _coverRotation;
+  late final PlayerTransition _transition;
+  int _pullGeneration = 0;
+  double? _settleTarget;
+  bool _settledExpanded = false;
+  bool _dragFromPlayer = false;
+  double _dragStartProgress = 0;
+  Timer? _returnToDesktopTimer;
+  AppToastHandle? _returnToDesktopToast;
+
+  bool _toolbarScrollSequenceActive = false;
+  double _lastToolbarScrollDelta = 0;
+  double _toolbarTravelExtent = toolbarDefaultTravelExtent;
+
+  @override
+  void initState() {
+    super.initState();
+    _toolbarRevealController = AnimationController(
+      vsync: this,
+      value: 1,
+      duration: AppMotion.medium,
+    );
+    final startsOnPlayer = widget.location == '/player';
+    _settledExpanded = startsOnPlayer;
+    _pull = AnimationController(
+      vsync: this,
+      value: startsOnPlayer ? 1 : 0,
+      duration: AppMotion.medium,
+    );
+    _playerLayerMounted = startsOnPlayer;
+    _playerReturnLocation = normalizedPlayerReturnLocation(
+      startsOnPlayer ? widget.playerReturnLocation : widget.routeLocation,
+      '/songs',
+    );
+    _coverRotation = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 24),
+    );
+    _transition = PlayerTransition(progress: _pull, rotation: _coverRotation);
+    _syncCoverRotation();
+    // Built once: the tear-offs below are stable across builds, so dependents
+    // of PlayerPullScope never rebuild.
+    _pullGestures = PlayerPullGestures(
+      onWarm: _handlePullWarm,
+      onStart: _handlePullStart,
+      onUpdate: _handlePullUpdate,
+      onEnd: _handlePullEnd,
+      onCancel: _handlePullCancel,
+      onOpen: _handleOpenPlayer,
+      onClose: _dismissPlayer,
+    );
+    _rememberTabLocation();
+  }
+
+  void _syncCoverRotation() {
+    final rotate =
+        ref.read(playerControllerProvider).playing &&
+        !ref.read(settingsProvider).squareAlbumCoverEnabled;
+    if (rotate) {
+      if (!_coverRotation.isAnimating) _coverRotation.repeat();
+    } else {
+      _coverRotation.stop(canceled: false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _resetTopLevelBack();
+    _toolbarRevealController.dispose();
+    _transition.dispose();
+    _coverRotation.dispose();
+    _pull.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant AppShell oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.routeLocation != widget.routeLocation) {
+      _rememberTabLocation();
+    }
+    if (oldWidget.location != widget.location) {
+      _resetTopLevelBack();
+      _toolbarScrollSequenceActive = false;
+      _lastToolbarScrollDelta = 0;
+      // Preserve the underlying toolbar's scroll position during the morph.
+      if (!_pullActive && _pull.value == 0) {
+        _toolbarRevealController.value = 1;
+      }
+      if (widget.location == '/player') {
+        _playerReturnLocation = normalizedPlayerReturnLocation(
+          widget.playerReturnLocation,
+          oldWidget.routeLocation,
+        );
+        _playerLayerMounted = true;
+        if (_pull.value < 1 && _settleTarget != 1 && !_pullActive) {
+          _commitPull();
+        }
+      } else {
+        if (oldWidget.location == '/player') {
+          _settledExpanded = false;
+          // Closing releases the route immediately. Its visual tail remains
+          // in this shell and must not be snapped away by the route update.
+          if (_settleTarget != 0) {
+            _pullGeneration++;
+            _settleTarget = null;
+            _pull.stop();
+            _pull.value = 0;
+            _animateToolbarTo(1);
+          }
+        } else if (_settleTarget != 0) {
+          _playerReturnLocation = normalizedPlayerReturnLocation(
+            widget.location,
+            _playerReturnLocation,
+          );
+        }
+      }
+      if (widget.location == '/songs/search') {
+        FocusManager.instance.primaryFocus?.unfocus();
+      } else {
+        _releaseRouteFocus();
+      }
+    }
+  }
+
+  double get _pullExtent => _transition.travel;
+
+  String get _contentLocation => widget.location == '/player'
+      ? Uri.parse(_playerReturnLocation).path
+      : widget.location;
+
+  void _handlePullWarm() {
+    if (_settleTarget == 0) return;
+    _transition.capture();
+    if (!_playerLayerMounted) setState(() => _playerLayerMounted = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _transition.capture();
+    });
+  }
+
+  void _handleOpenPlayer() {
+    _releaseRouteFocus();
+    _handlePullWarm();
+    _pullActive = false;
+    _commitPull();
+  }
+
+  void _handlePullStart({bool fromPlayer = false}) {
+    // A released dismiss belongs to the underlying page. Only an explicit
+    // new pull on the capsule may open the player again during its tail.
+    if (fromPlayer && _settleTarget == 0) return;
+    _pullGeneration++;
+    _settleTarget = null;
+    _pull.stop();
+    _handlePullWarm();
+    _pullActive = true;
+    _dragFromPlayer = fromPlayer;
+    _dragStartProgress = _pull.value;
+    _toolbarRevealController.stop();
+    _releaseRouteFocus();
+  }
+
+  void _handlePullUpdate(double dy) {
+    if (!_pullActive || dy == 0) return;
+    _pull.value = (_pull.value - dy / _pullExtent).clamp(0.0, 1.0);
+  }
+
+  void _handlePullEnd(double velocityDy) {
+    if (!_pullActive) return;
+    _pullActive = false;
+    final reveal = PlayerMotion.shouldExpand(
+      progress: _pull.value,
+      travel: _pullExtent,
+      velocityY: velocityDy,
+      wasExpanded: _settledExpanded,
+      fromPlayer: _dragFromPlayer,
+      startProgress: _dragStartProgress,
+    );
+    if (reveal) {
+      _commitPull(velocityDy: velocityDy);
+    } else {
+      _settleClosed(velocityDy: velocityDy);
+    }
+  }
+
+  void _handlePullCancel() {
+    if (!_pullActive) return;
+    _pullActive = false;
+    if (_settledExpanded) {
+      _commitPull();
+    } else {
+      _settleClosed();
+    }
+  }
+
+  Future<void> _commitPull({double velocityDy = 0}) async {
+    final generation = ++_pullGeneration;
+    _settleTarget = 1;
+    if (!_playerLayerMounted) setState(() => _playerLayerMounted = true);
+    // Lay out the real destination before the first visible shared-cover frame.
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted || generation != _pullGeneration) return;
+    _transition.capture();
+    // The transparent route keeps the origin alive. Activate the controls
+    // immediately instead of waiting through the spring's subpixel tail.
+    if (widget.location != '/player') {
+      _playerReturnLocation = widget.routeLocation;
+      unawaited(context.push<void>('/player', extra: _playerReturnLocation));
+    }
+    try {
+      await _animatePullTo(1, velocityDy: velocityDy).orCancel;
+    } on TickerCanceled {
+      return;
+    }
+    if (!mounted || generation != _pullGeneration || _pull.value != 1) return;
+    _settledExpanded = true;
+    _settleTarget = null;
+  }
+
+  Future<void> _dismissPlayer([String? target]) => _settleClosed(
+    destination: target,
+    velocityDy: -_pull.velocity * _pullExtent,
+  );
+
+  Future<void> _settleClosed({
+    String? destination,
+    double velocityDy = 0,
+  }) async {
+    final generation = ++_pullGeneration;
+    _pullActive = false;
+    setState(() {
+      _settleTarget = 0;
+      _settledExpanded = false;
+    });
+    _transition.capture();
+    // Remove the transparent route and its modal barrier before animating,
+    // so the next pointer can scroll/click the live page immediately.
+    if (widget.location == '/player') {
+      if (destination == null && GoRouter.of(context).canPop()) {
+        context.pop();
+      } else {
+        context.go(destination ?? _playerReturnLocation);
+      }
+    }
+    try {
+      await _animatePullTo(0, velocityDy: velocityDy).orCancel;
+    } on TickerCanceled {
+      return;
+    }
+    if (!mounted || generation != _pullGeneration || _pull.value != 0) return;
+    setState(() => _settleTarget = null);
+    _animateToolbarTo(1);
+  }
+
+  TickerFuture _animatePullTo(double target, {double velocityDy = 0}) {
+    if ((_pull.value - target).abs() < 1e-9 ||
+        MediaQuery.disableAnimationsOf(context)) {
+      _pull.value = target;
+      return TickerFuture.complete();
+    }
+    return _pull.animateWith(
+      PlayerSpringSimulation(
+        _pull.value,
+        target,
+        -velocityDy / _pullExtent,
+        distanceTolerance:
+            0.01 / (MediaQuery.devicePixelRatioOf(context) * _pullExtent),
+      ),
+    );
+  }
+
+  /// Records the current route (full URI including query) as the last visited
+  /// location of its bottom-toolbar tab, so tab taps can restore it later.
+  void _rememberTabLocation() {
+    final location = widget.location;
+    final routeLocation = widget.routeLocation;
+    if (location == '/player') return;
+    final index = toolbarIndexFor(location);
+    if (index == 2) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final memory = ref.read(tabLocationMemoryProvider);
+      if (memory[index] == routeLocation) return;
+      ref.read(tabLocationMemoryProvider.notifier).state = {
+        ...memory,
+        index: routeLocation,
+      };
+    });
+  }
+
+  Future<bool> _handleBackButton() async {
+    final navigator = Navigator.of(context, rootNavigator: true);
+    if (navigator.canPop()) {
+      await navigator.maybePop();
+      return true;
+    }
+    if (widget.location == '/player') {
+      _pullActive = false;
+      unawaited(_dismissPlayer());
+      return true;
+    }
+    // Mid-pull: put the player back where it came from instead of navigating.
+    if (_pullActive ||
+        (_pull.value > 0 &&
+            _settleTarget != 0 &&
+            widget.location != '/player')) {
+      _pullActive = false;
+      unawaited(_settleClosed());
+      return true;
+    }
+    if (isSongsLibraryLocation(widget.location)) {
+      final songsToolbar = ref.read(songsToolbarStateProvider);
+      if (songsToolbar.batchMode && songsToolbar.onToggleBatch != null) {
+        songsToolbar.onToggleBatch!();
+        return true;
+      }
+    }
+    if (isPlaylistDetailLocation(widget.location)) {
+      final playlistToolbar = ref.read(playlistDetailToolbarStateProvider);
+      if (playlistToolbar.searchMode &&
+          playlistToolbar.onToggleSearch != null) {
+        playlistToolbar.onToggleSearch!();
+        return true;
+      }
+      if (playlistToolbar.batchMode && playlistToolbar.onToggleBatch != null) {
+        playlistToolbar.onToggleBatch!();
+        return true;
+      }
+    }
+
+    _releaseRouteFocus();
+    if (_isTopLevelMenuLocation(widget.location)) {
+      await _handleTopLevelBack();
+    } else if (widget.location == '/downloads' ||
+        widget.location == '/songs/search') {
+      context.go('/songs');
+    } else if (widget.location == '/settings/sources' ||
+        widget.location == '/settings/webdav' ||
+        widget.location == '/settings/equalizer' ||
+        widget.location == '/debug') {
+      context.go('/settings');
+    } else if (context.canPop()) {
+      context.pop();
+    } else if (isDiscoveryLocation(widget.location) && widget.location != '/') {
+      context.go('/');
+    } else if (isPlaylistLocation(widget.location)) {
+      context.go(widget.playlistBackLocation);
+    } else {
+      unawaited(_moveAppTaskToBack());
+    }
+    return true;
+  }
+
+  Future<void> _handleTopLevelBack() async {
+    if (_returnToDesktopTimer?.isActive ?? false) {
+      _resetTopLevelBack();
+      await _moveAppTaskToBack();
+      return;
+    }
+
+    _resetTopLevelBack();
+    _returnToDesktopToast = showAppToast(
+      context,
+      '再次点击返回键切换到桌面',
+      duration: _doubleBackExitWindow,
+    );
+    _returnToDesktopTimer = Timer(_doubleBackExitWindow, () {
+      _returnToDesktopTimer = null;
+      _returnToDesktopToast = null;
+    });
+  }
+
+  void _resetTopLevelBack() {
+    _returnToDesktopTimer?.cancel();
+    _returnToDesktopTimer = null;
+    dismissAppToast(_returnToDesktopToast, showRemoveAnimation: false);
+    _returnToDesktopToast = null;
+  }
+
+  void _releaseRouteFocus() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      FocusManager.instance.primaryFocus?.unfocus();
+    });
+  }
+
+  bool _handleToolbarScrollNotification(ScrollNotification notification) {
+    // While a player pull owns the toolbar reveal, scrolling must not fight it.
+    if (_pullActive ||
+        _settleTarget == 0 ||
+        ref.read(settingsProvider).navigationMode !=
+            AppNavigationMode.singleCapsule) {
+      return false;
+    }
+    final songsBatchMode =
+        isSongsLibraryLocation(widget.location) &&
+        ref.read(songsToolbarStateProvider).batchMode;
+    final playlistBatchMode =
+        isPlaylistDetailLocation(widget.location) &&
+        ref.read(playlistDetailToolbarStateProvider).batchMode;
+    if (!ref.read(shellToolbarVisibleProvider) ||
+        songsBatchMode ||
+        playlistBatchMode) {
+      _toolbarScrollSequenceActive = false;
+      _lastToolbarScrollDelta = 0;
+      _toolbarRevealController.stop(canceled: false);
+      return false;
+    }
+    // Discovery's vertical lists sit inside the horizontal source PageView.
+    // Search results and other routes still only accept the outermost list.
+    final maxScrollDepth =
+        widget.location == '/' &&
+            !ref.read(searchControllerProvider).isSearchActive
+        ? 1
+        : 0;
+    if (widget.location == '/player' ||
+        notification.depth > maxScrollDepth ||
+        notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _toolbarScrollSequenceActive = true;
+      _lastToolbarScrollDelta = 0;
+      _toolbarRevealController.stop(canceled: false);
+      return false;
+    }
+
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      _toolbarScrollSequenceActive = true;
+      _applyToolbarScrollDelta(notification.scrollDelta ?? 0);
+      return false;
+    }
+
+    if (notification is OverscrollNotification &&
+        notification.dragDetails != null) {
+      _toolbarScrollSequenceActive = true;
+      _applyToolbarScrollDelta(notification.overscroll);
+      return false;
+    }
+
+    if (notification is ScrollEndNotification) {
+      _finishToolbarScrollSequence();
+    }
+    return false;
+  }
+
+  void _finishToolbarScrollSequence() {
+    if (!_toolbarScrollSequenceActive) return;
+    _toolbarScrollSequenceActive = false;
+    _settleToolbarAfterScroll();
+  }
+
+  void _applyToolbarScrollDelta(double delta) {
+    if (delta.abs() < toolbarScrollDeltaEpsilon) return;
+    _lastToolbarScrollDelta = delta;
+    _toolbarRevealController.stop(canceled: false);
+    _toolbarRevealController.value =
+        (_toolbarRevealController.value - delta / _toolbarTravelExtent)
+            .clamp(0.0, 1.0)
+            .toDouble();
+  }
+
+  void _settleToolbarAfterScroll() {
+    final reveal = _toolbarRevealController.value;
+    final target = switch (_lastToolbarScrollDelta) {
+      > toolbarScrollDeltaEpsilon =>
+        reveal <= toolbarHideDirectionThreshold ? 0.0 : 1.0,
+      < -toolbarScrollDeltaEpsilon =>
+        reveal >= toolbarShowDirectionThreshold ? 1.0 : 0.0,
+      _ => reveal >= 0.5 ? 1.0 : 0.0,
+    };
+    _lastToolbarScrollDelta = 0;
+    _animateToolbarTo(target);
+  }
+
+  void _animateToolbarTo(double target) {
+    if (_pullActive) return;
+    if ((_toolbarRevealController.value - target).abs() < 0.001) {
+      _toolbarRevealController.value = target;
+      return;
+    }
+    if (MediaQuery.maybeDisableAnimationsOf(context) ?? false) {
+      _toolbarRevealController.value = target;
+      return;
+    }
+    final remaining = (_toolbarRevealController.value - target).abs();
+    _toolbarRevealController.animateTo(
+      target,
+      duration: Duration(milliseconds: (140 + 180 * remaining).round()),
+      curve: AppMotion.emphasized,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final contentLocation = _contentLocation;
+    final contentRoute = widget.location == '/player'
+        ? _playerReturnLocation
+        : widget.routeLocation;
+    final viewport = MediaQuery.sizeOf(context);
+    if (_transition.viewport != viewport) {
+      _transition.viewport = viewport;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _transition.capture(refreshSource: true);
+      });
+    }
+    _transition.bottomInset = MediaQuery.viewPaddingOf(context).bottom;
+    ref.listen(
+      playerControllerProvider.select((s) => s.playing),
+      (_, _) => _syncCoverRotation(),
+    );
+    ref.listen(
+      settingsProvider.select((s) => s.squareAlbumCoverEnabled),
+      (_, _) => _syncCoverRotation(),
+    );
+    final pageBackground = Theme.of(context).scaffoldBackgroundColor;
+    final isPlayer = widget.location == '/player';
+    final toolbarTravelExtent = _bottomToolbarTravelExtent(context);
+    _toolbarTravelExtent = toolbarTravelExtent;
+    final navigationMode = ref.watch(
+      settingsProvider.select((settings) => settings.navigationMode),
+    );
+    final showPlayerBar =
+        navigationMode != AppNavigationMode.singleCapsule &&
+        ref.watch(
+          playerControllerProvider.select(
+            (state) => state.hasTrack || state.loading,
+          ),
+        );
+    final shellControlsVisible =
+        navigationMode != AppNavigationMode.singleCapsule &&
+        MediaQuery.viewInsetsOf(context).bottom == 0 &&
+        ref.watch(shellToolbarVisibleProvider) &&
+        !(isSongsLibraryLocation(contentLocation) &&
+            ref.watch(
+              songsToolbarStateProvider.select((state) => state.batchMode),
+            )) &&
+        !(isPlaylistDetailLocation(contentLocation) &&
+            ref.watch(
+              playlistDetailToolbarStateProvider.select(
+                (state) => state.batchMode,
+              ),
+            ));
+    final nativeBottomExtent =
+        shellControlsVisible && navigationMode == AppNavigationMode.native
+        ? nativeBottomAreaHeight(context, showPlayer: showPlayerBar)
+        : 0.0;
+    // The player strip floats over content; only the navigation bar below it
+    // pushes the page up.
+    final nativeFloatingExtent =
+        shellControlsVisible &&
+            navigationMode == AppNavigationMode.native &&
+            showPlayerBar
+        ? nativeFloatingPlayerExtent(context)
+        : 0.0;
+    final dualBottomExtent =
+        shellControlsVisible && navigationMode == AppNavigationMode.dualCapsule
+        ? dualCapsuleBottomAreaHeight(context, showPlayer: showPlayerBar)
+        : 0.0;
+
+    ref.listen<AppNavigationMode>(
+      settingsProvider.select((settings) => settings.navigationMode),
+      (previous, next) {
+        _toolbarScrollSequenceActive = false;
+        _lastToolbarScrollDelta = 0;
+        _toolbarRevealController.stop(canceled: false);
+        _toolbarRevealController.value = 1;
+      },
+    );
+
+    ref.listen<bool>(shellToolbarVisibleProvider, (previous, next) {
+      if (next && previous == false) _animateToolbarTo(1);
+    });
+    ref.listen<SongsToolbarState>(songsToolbarStateProvider, (previous, next) {
+      if (!isSongsLibraryLocation(contentLocation)) return;
+      if (next.batchMode) {
+        _toolbarScrollSequenceActive = false;
+        _lastToolbarScrollDelta = 0;
+        _toolbarRevealController.stop(canceled: false);
+      } else if (previous?.batchMode == true) {
+        _animateToolbarTo(1);
+      }
+    });
+    ref.listen<PlaylistDetailToolbarState>(playlistDetailToolbarStateProvider, (
+      previous,
+      next,
+    ) {
+      if (!isPlaylistDetailLocation(contentLocation)) return;
+      if (next.batchMode) {
+        _toolbarScrollSequenceActive = false;
+        _lastToolbarScrollDelta = 0;
+        _toolbarRevealController.stop(canceled: false);
+      } else if (previous?.batchMode == true) {
+        _animateToolbarTo(1);
+      }
+    });
+
+    return BackButtonListener(
+      onBackButtonPressed: _handleBackButton,
+      child: PlayerTransitionScope(
+        transition: _transition,
+        child: PlayerPullScope(
+          gestures: _pullGestures,
+          child: ShellBottomArea(
+            navigationMode: navigationMode,
+            extent: switch (navigationMode) {
+              AppNavigationMode.native => nativeBottomExtent,
+              AppNavigationMode.dualCapsule => dualBottomExtent,
+              AppNavigationMode.singleCapsule => 0.0,
+            },
+            floatingExtent: switch (navigationMode) {
+              AppNavigationMode.native => nativeFloatingExtent,
+              AppNavigationMode.dualCapsule => dualBottomExtent,
+              AppNavigationMode.singleCapsule => 0.0,
+            },
+            child: Scaffold(
+              extendBody: true,
+              resizeToAvoidBottomInset: true,
+              backgroundColor: pageBackground,
+              body: Stack(
+                key: _transition.rootKey,
+                // Every child carries an explicit key so element matching never
+                // falls back to list position. The player layer slot below appears
+                // and disappears, and without keys that index shift would rebuild
+                // the toolbar subtree — killing any in-flight drag recognizer.
+                children: [
+                  Positioned.fill(
+                    key: const ValueKey('shell-content'),
+                    child: ColoredBox(
+                      color: pageBackground,
+                      // Keep the outer navigator mounted across tab changes;
+                      // its StatefulShellRoute owns the retained branch stacks.
+                      child: RepaintBoundary(
+                        child: ClipRect(
+                          child: Listener(
+                            behavior: HitTestBehavior.translucent,
+                            onPointerUp: (_) => _finishToolbarScrollSequence(),
+                            onPointerCancel: (_) =>
+                                _finishToolbarScrollSequence(),
+                            child: NotificationListener<ScrollNotification>(
+                              onNotification: _handleToolbarScrollNotification,
+                              child: widget.child,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (contentLocation == '/')
+                    const Positioned.fill(
+                      key: ValueKey('shell-fab'),
+                      child: Stack(
+                        children: [
+                          DiscoveryCategoryFabLayer(),
+                          SearchPagingFabLayer(),
+                        ],
+                      ),
+                    ),
+                  _buildPlayerLayer(isPlayer),
+                  Positioned(
+                    key: const ValueKey('shell-toolbar'),
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: AnimatedBuilder(
+                      animation: _pull,
+                      builder: (context, child) {
+                        final blocked =
+                            _pull.value > 0 &&
+                            !(_settleTarget == 0 && _pull.value < 0.2);
+                        return IgnorePointer(
+                          ignoring: blocked,
+                          child: ExcludeSemantics(
+                            excluding: blocked,
+                            child: child!,
+                          ),
+                        );
+                      },
+                      child: switch (navigationMode) {
+                        AppNavigationMode.dualCapsule =>
+                          DualCapsuleBottomNavigation(
+                            location: contentLocation,
+                            routeLocation: contentRoute,
+                            showPlayer: showPlayerBar,
+                            visible: shellControlsVisible,
+                            reveal: _toolbarRevealController,
+                            isPlayer: isPlayer,
+                          ),
+                        AppNavigationMode.native => NativeBottomNavigation(
+                          location: contentLocation,
+                          routeLocation: contentRoute,
+                          showPlayer: showPlayerBar,
+                          visible: shellControlsVisible,
+                          reveal: _toolbarRevealController,
+                        ),
+                        AppNavigationMode.singleCapsule => BottomToolbar(
+                          location: contentLocation,
+                          routeLocation: contentRoute,
+                          reveal: _toolbarRevealController,
+                          travelExtent: toolbarTravelExtent,
+                        ),
+                      },
+                    ),
+                  ),
+                  _buildSharedCoverLayer(),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlayerLayer(bool isPlayer) {
+    if (!_playerLayerMounted) {
+      return const Positioned(
+        key: ValueKey('shell-player'),
+        left: 0,
+        top: 0,
+        width: 0,
+        height: 0,
+        child: SizedBox.shrink(),
+      );
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return Positioned(
+      key: const ValueKey('shell-player'),
+      left: 0,
+      right: 0,
+      top: 0,
+      height: MediaQuery.sizeOf(context).height,
+      child: MediaQuery.removeViewInsets(
+        context: context,
+        removeBottom: true,
+        child: AnimatedBuilder(
+          animation: _transition,
+          child: PlayerPage(
+            returnLocation: _playerReturnLocation,
+            progress: _pull,
+            active: isPlayer,
+            onDismissRequested: _dismissPlayer,
+          ),
+          builder: (context, child) {
+            final p = _pull.value;
+            final visible = p > 0 || isPlayer;
+            final interactive = visible && _settleTarget != 0;
+            return IgnorePointer(
+              ignoring: !interactive,
+              child: ExcludeSemantics(
+                excluding: !interactive,
+                child: TickerMode(
+                  enabled: visible,
+                  child: Opacity(
+                    opacity: visible ? 1 : 0,
+                    child: PlayerPullHandle(
+                      child: Stack(
+                        fit: StackFit.expand,
+                        clipBehavior: Clip.none,
+                        children: [
+                          ClipRRect(
+                            key: const ValueKey('player-surface-clip'),
+                            clipper: _PlayerSurfaceClipper(_transition.surface),
+                            child: Stack(
+                              fit: StackFit.expand,
+                              children: [
+                                ColoredBox(color: toolbarCapsuleColor(scheme)),
+                                Transform.translate(
+                                  key: const ValueKey('player-exit-slide'),
+                                  offset: Offset(0, (1 - p) * _pullExtent),
+                                  child: child,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSharedCoverLayer() {
+    final square = ref.watch(
+      settingsProvider.select((s) => s.squareAlbumCoverEnabled),
+    );
+    final track = ref.watch(playerControllerProvider.select((s) => s.track));
+    final scheme = Theme.of(context).colorScheme;
+    // Paint above the returning capsule background. This overlay never owns
+    // input, even while the cover overlaps an interactive part of the page.
+    return Positioned.fill(
+      key: const ValueKey('shell-shared-cover'),
+      child: IgnorePointer(
+        child: ExcludeSemantics(
+          child: AnimatedBuilder(
+            animation: _transition,
+            child: RepaintBoundary(
+              child: RotationTransition(
+                turns: square
+                    ? const AlwaysStoppedAnimation<double>(0)
+                    : _coverRotation,
+                child: PlayerArtworkImage(
+                  url: CoverImageSource.normalizeUrl(
+                    track?.coverUrl,
+                    size: 700,
+                  ),
+                  bytes: track?.coverBytes,
+                  animate: false,
+                  placeholder: ColoredBox(
+                    color: scheme.surfaceContainerHighest,
+                    child: const Center(child: Icon(Icons.album_rounded)),
+                  ),
+                ),
+              ),
+            ),
+            builder: (context, child) {
+              final flight = track == null ? null : _transition.coverRect;
+              return Stack(
+                children: [
+                  if (flight != null)
+                    Positioned.fromRect(
+                      key: const ValueKey('player-shared-cover'),
+                      rect: flight,
+                      child: square
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(
+                                flight.width * kSquareCoverRadiusFactor,
+                              ),
+                              child: child,
+                            )
+                          : ClipOval(child: child),
+                    ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+const _doubleBackExitWindow = Duration(seconds: 2);
+
+bool _isTopLevelMenuLocation(String location) {
+  return location == '/' || location == '/songs' || location == '/settings';
+}
+
+const _appTaskChannel = MethodChannel('cy_shine_music/app_task');
+
+Future<void> _moveAppTaskToBack() async {
+  try {
+    await _appTaskChannel.invokeMethod<bool>('moveToBack');
+  } catch (_) {
+    // If the native channel is unavailable, still consume back so Android does
+    // not destroy the Flutter route stack.
+  }
+}
+
+double _bottomToolbarTravelExtent(BuildContext context) {
+  final toolbarHeight = toolbarHeightFor(context);
+  final safeBottom = math.max(
+    MediaQuery.paddingOf(context).bottom,
+    toolbarMinimumBottomInset,
+  );
+  return toolbarHeight + safeBottom;
+}
+
+class _PlayerSurfaceClipper extends CustomClipper<RRect> {
+  const _PlayerSurfaceClipper(this.surface);
+  final RRect surface;
+  @override
+  RRect getClip(Size size) => surface;
+  @override
+  bool shouldReclip(_PlayerSurfaceClipper oldClipper) =>
+      surface != oldClipper.surface;
+}

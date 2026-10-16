@@ -1,0 +1,757 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:ui' as ui;
+
+import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'package:cy_shine_music/core/storage/settings_store.dart';
+import 'package:cy_shine_music/features/player/player_audio_handler.dart';
+import 'package:cy_shine_music/features/player/player_controller.dart';
+import 'package:cy_shine_music/features/player/player_page.dart';
+import 'package:cy_shine_music/features/settings/settings_page.dart';
+import 'package:cy_shine_music/features/shell/app_shell.dart';
+import 'package:cy_shine_music/features/shell/player_transition.dart';
+import 'package:cy_shine_music/features/shell/shell_navigation.dart';
+import 'package:cy_shine_music/features/shell/widgets/bottom_toolbar.dart';
+import 'package:cy_shine_music/features/shell/widgets/dual_capsule_bottom_navigation.dart';
+import 'package:cy_shine_music/features/shell/widgets/mini_player_bar.dart';
+import 'package:cy_shine_music/features/songs/songs_toolbar_state.dart';
+import 'package:cy_shine_music/router.dart';
+import 'package:cy_shine_music/theme/app_theme.dart';
+
+final _miniPlayer = find.byKey(const ValueKey('native-mini-player'));
+
+void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('legacy pager remains the default and settings switch live', (
+    tester,
+  ) async {
+    final harness = await _pumpApp(tester, native: false);
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.byTooltip('播放页'), findsOneWidget);
+
+    await tester.drag(find.byType(BottomToolbar), const Offset(-180, 0));
+    await _pumpUi(tester);
+    expect(find.byType(MiniPlayerBar), findsOneWidget);
+    expect(harness.controller.nextCalls, 0);
+    await tester.drag(find.byType(BottomToolbar), const Offset(180, 0));
+    await _pumpUi(tester);
+    expect(find.byTooltip('播放页'), findsOneWidget);
+
+    final setting = find.byKey(const ValueKey('navigation-mode-menu-anchor'));
+    await tester.ensureVisible(setting);
+    await _pumpUi(tester);
+    await tester.tap(setting);
+    await _pumpUi(tester);
+    await tester.tap(find.text('原生导航').last);
+    await _pumpUi(tester);
+    expect(harness.location, '/settings');
+    expect(find.byType(BottomToolbar), findsNothing);
+    expect(find.byType(NavigationBar).hitTestable(), findsOneWidget);
+    expect(_miniPlayer.hitTestable(), findsOneWidget);
+    expect(harness.controller.snapshot.track?.id, _track.id);
+    expect(harness.controller.snapshot.playing, isTrue);
+
+    await tester.ensureVisible(setting);
+    await _pumpUi(tester);
+    await tester.tap(setting);
+    await _pumpUi(tester);
+    await tester.tap(find.text('单胶囊').last);
+    await _pumpUi(tester);
+    expect(find.byType(NavigationBar), findsNothing);
+    expect(find.byTooltip('播放页'), findsOneWidget);
+    expect(harness.location, '/settings');
+    expect(harness.controller.snapshot.playing, isTrue);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 4));
+  });
+
+  testWidgets(
+    'dual capsule navigation renders mini player and navigation capsule',
+    (tester) async {
+      final harness = await _pumpApp(tester, native: false);
+      final setting = find.byKey(const ValueKey('navigation-mode-menu-anchor'));
+      await tester.ensureVisible(setting);
+      await _pumpUi(tester);
+      await tester.tap(setting);
+      await _pumpUi(tester);
+      await tester.tap(find.text('双胶囊').last);
+      await _pumpUi(tester);
+
+      expect(find.byType(DualCapsuleBottomNavigation), findsOneWidget);
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+      expect(find.text('发现'), findsOneWidget);
+      expect(find.text('歌曲'), findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byType(DualCapsuleBottomNavigation),
+          matching: find.text('设置'),
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('发现'));
+      await _pumpUi(tester);
+      expect(harness.location, '/');
+      expect(find.byType(DualCapsuleBottomNavigation), findsOneWidget);
+
+      await tester.tap(find.byTooltip('打开播放页'));
+      await _pumpUi(tester);
+      expect(harness.location, '/player');
+      expect(
+        find.descendant(
+          of: find.byType(DualCapsuleBottomNavigation),
+          matching: find.text('发现'),
+        ).hitTestable(),
+        findsNothing,
+      );
+
+      await tester.binding.handlePopRoute();
+      await _pumpUi(tester);
+      expect(harness.location, '/');
+      expect(
+        find.descendant(
+          of: find.byType(DualCapsuleBottomNavigation),
+          matching: find.text('发现'),
+        ).hitTestable(),
+        findsOneWidget,
+      );
+      await tester.pump(const Duration(seconds: 4));
+    },
+  );
+
+  testWidgets(
+    'native player is visible for tracks and loading, including pause',
+    (tester) async {
+      final harness = await _pumpApp(tester, initialState: const PlayerState());
+      expect(find.byType(NavigationDestination), findsNWidgets(3));
+      expect(find.byTooltip('播放页'), findsNothing);
+      expect(_miniPlayer, findsNothing);
+
+      harness.controller.seed(const PlayerState(loading: true));
+      await _pumpUi(tester);
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+      harness.controller.seed(_playing.copyWith(playing: false));
+      await _pumpUi(tester);
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+
+      harness.controller.seed(const PlayerState());
+      await _pumpUi(tester);
+      expect(_miniPlayer, findsNothing);
+      expect(find.byType(NavigationBar).hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'native controls stay fixed while scrolling and reserve content space',
+    (tester) async {
+      await _pumpApp(tester);
+      final playerRect = tester.getRect(_miniPlayer);
+      final navigationRect = tester.getRect(find.byType(NavigationBar));
+      expect(
+        tester.getCenter(find.byType(MiniPlayerBar)).dy,
+        closeTo(playerRect.center.dy, 0.01),
+      );
+      expect(playerRect.bottom, lessThan(navigationRect.top));
+      expect(
+        tester.getBottomLeft(find.byType(SettingsPage)).dy,
+        lessThanOrEqualTo(navigationRect.top),
+      );
+      expect(
+        tester.getBottomLeft(find.byType(SettingsPage)).dy,
+        greaterThan(playerRect.top),
+      );
+
+      await tester.drag(
+        find.descendant(
+          of: find.byType(SettingsPage),
+          matching: find.byType(CustomScrollView),
+        ),
+        const Offset(0, -450),
+      );
+      await _pumpUi(tester);
+      expect(tester.getRect(_miniPlayer), playerRect);
+      expect(tester.getRect(find.byType(NavigationBar)), navigationRect);
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+      await _tapTab(tester, '发现');
+      final categoryFab = find.byKey(const ValueKey('discovery-category-fab'));
+      expect(categoryFab.hitTestable(), findsOneWidget);
+      expect(
+        tester.getBottomLeft(categoryFab).dy,
+        lessThan(tester.getTopLeft(_miniPlayer).dy),
+      );
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'native swipes change tracks once without navigating or opening player',
+    (tester) async {
+      final harness = await _pumpApp(tester);
+      await tester.drag(_miniPlayer, const Offset(-130, 0));
+      await _pumpUi(tester);
+      expect(harness.controller.nextCalls, 1);
+      expect(harness.controller.previousCalls, 0);
+      expect(harness.location, '/settings');
+
+      await tester.drag(_miniPlayer, const Offset(130, 0));
+      await _pumpUi(tester);
+      expect(harness.controller.previousCalls, 1);
+      expect(harness.location, '/settings');
+
+      await tester.drag(_miniPlayer, const Offset(-25, 0));
+      final gesture = await tester.startGesture(tester.getCenter(_miniPlayer));
+      await gesture.moveBy(const Offset(-130, 0));
+      await gesture.cancel();
+      await _pumpUi(tester);
+      expect(harness.controller.nextCalls, 1);
+
+      harness.controller.seed(_playing.copyWith(loading: true));
+      await _pumpUi(tester);
+      await tester.drag(_miniPlayer, const Offset(-130, 0));
+      await _pumpUi(tester);
+      expect(harness.controller.nextCalls, 1);
+      expect(harness.location, '/settings');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'native tabs restore child routes and active taps return to the root',
+    (tester) async {
+      final harness = await _pumpApp(
+        tester,
+        initialLocation: '/settings/webdav',
+      );
+      expect(
+        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+        2,
+      );
+      await _tapTab(tester, '歌曲');
+      expect(harness.location, '/songs');
+      expect(
+        tester.widget<NavigationBar>(find.byType(NavigationBar)).selectedIndex,
+        1,
+      );
+      await _tapTab(tester, '设置');
+      expect(harness.location, '/settings/webdav');
+      await _tapTab(tester, '设置');
+      expect(harness.location, '/settings');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets('native player tap and pulls preserve the full return URI', (
+    tester,
+  ) async {
+    const origin = '/settings/webdav?section=sync';
+    final harness = await _pumpApp(tester, initialLocation: origin);
+    await tester.tap(find.byTooltip('打开播放页'));
+    await _pumpUi(tester);
+    expect(harness.location, '/player');
+    expect(
+      tester.widget<PlayerPage>(find.byType(PlayerPage)).returnLocation,
+      origin,
+    );
+    expect(find.byType(NavigationBar).hitTestable(), findsNothing);
+    await tester.binding.handlePopRoute();
+    await _pumpUi(tester);
+    expect(harness.location, origin);
+
+    final playerElement = tester.element(find.byType(PlayerPage));
+    final shortPull = await tester.startGesture(tester.getCenter(_miniPlayer));
+    await shortPull.moveBy(const Offset(0, -20));
+    await shortPull.moveBy(const Offset(0, -30));
+    await shortPull.up();
+    await _pumpUi(tester);
+    expect(harness.location, origin);
+    expect(_miniPlayer.hitTestable(), findsOneWidget);
+
+    final longPull = await tester.startGesture(tester.getCenter(_miniPlayer));
+    await longPull.moveBy(const Offset(0, -20));
+    await longPull.moveBy(const Offset(0, -500));
+    await longPull.up();
+    await _pumpUi(tester);
+    expect(harness.location, '/player');
+    expect(tester.element(find.byType(PlayerPage)), same(playerElement));
+    await tester.binding.handlePopRoute();
+    await _pumpUi(tester);
+    expect(harness.location, origin);
+    expect(harness.controller.nextCalls, 0);
+    expect(harness.controller.previousCalls, 0);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('capsule morph keeps one cover and the originating page alive', (
+    tester,
+  ) async {
+    final harness = await _pumpApp(tester);
+    final originalPage = tester.element(find.byType(SettingsPage));
+    final gesture = await tester.startGesture(tester.getCenter(_miniPlayer));
+    await tester.pump();
+    await tester.pump();
+    final transition = tester
+        .widget<PlayerTransitionScope>(find.byType(PlayerTransitionScope))
+        .transition;
+    final source = transition.miniCover!;
+    final end = transition.fullCover!;
+    await gesture.moveBy(const Offset(0, -20));
+    await tester.pump();
+    await gesture.moveBy(Offset(0, -transition.travel / 2));
+    await tester.pump();
+    expect(transition.progress.value, closeTo(.5, .001));
+    final shared = tester.getRect(
+      find.byKey(const ValueKey('player-shared-cover')),
+    );
+    expect(
+      shared.center.dx,
+      closeTo(source.center.dx + .75 * (end.center.dx - source.center.dx), .01),
+    );
+    expect(
+      shared.center.dy,
+      closeTo(source.center.dy + .25 * (end.center.dy - source.center.dy), .01),
+    );
+    for (final anchor in tester.widgetList<PlayerCoverAnchor>(
+      find.byType(PlayerCoverAnchor),
+    )) {
+      final opacity = find
+          .descendant(of: find.byWidget(anchor), matching: find.byType(Opacity))
+          .first;
+      expect(tester.widget<Opacity>(opacity).opacity, 0);
+    }
+    await gesture.up();
+    await _pumpUi(tester);
+    expect(harness.location, '/player');
+    expect(tester.element(find.byType(SettingsPage)), same(originalPage));
+    expect(find.byKey(const ValueKey('player-shared-cover')), findsNothing);
+
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 120));
+    expect(harness.location, '/settings');
+    expect(transition.progress.value, inExclusiveRange(0, 1));
+    expect(tester.element(find.byType(SettingsPage)), same(originalPage));
+    await _pumpUi(tester);
+    expect(harness.location, '/settings');
+    expect(tester.element(find.byType(SettingsPage)), same(originalPage));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a released closing spring does not capture another list drag', (
+    tester,
+  ) async {
+    final harness = await _pumpApp(tester);
+    await tester.tap(find.byTooltip('打开播放页'));
+    await _pumpUi(tester);
+    await tester.binding.handlePopRoute();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 80));
+    final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
+    final closingProgress = player.progress.value;
+    final scrollable = tester.state<ScrollableState>(
+      find
+          .descendant(
+            of: find.byType(SettingsPage),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    final before = scrollable.position.pixels;
+    final gesture = await tester.startGesture(const Offset(120, 260));
+    await gesture.moveBy(const Offset(0, -20));
+    await tester.pump(const Duration(milliseconds: 16));
+    await gesture.moveBy(const Offset(0, -220));
+    await tester.pump(const Duration(milliseconds: 16));
+    expect(scrollable.position.pixels, greaterThan(before));
+    expect(player.progress.value, lessThan(closingProgress));
+    expect(harness.location, '/settings');
+    await gesture.up();
+    await _pumpUi(tester);
+    expect(harness.location, '/settings');
+    expect(
+      tester.widget<PlayerPage>(find.byType(PlayerPage)).progress.value,
+      0,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+    'visible navigation accepts taps before the closing tail finishes',
+    (tester) async {
+      final harness = await _pumpApp(tester);
+      await tester.tap(find.byTooltip('打开播放页'));
+      await _pumpUi(tester);
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 240));
+      final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
+      expect(player.progress.value, inExclusiveRange(0, .2));
+      await tester.tap(
+        find.descendant(
+          of: find.byType(NavigationBar),
+          matching: find.text('歌曲'),
+        ),
+      );
+      await tester.pump();
+      expect(harness.location, '/songs');
+      expect(player.progress.value, greaterThan(0));
+      await _pumpUi(tester);
+      expect(harness.location, '/songs');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final native in [false, true]) {
+    testWidgets(
+      'a released player drag lets the list scroll through its remaining surface (native=$native)',
+      (tester) async {
+        final harness = await _pumpApp(tester, native: native);
+        if (!native) {
+          await tester.drag(find.byType(BottomToolbar), const Offset(-180, 0));
+          await _pumpUi(tester);
+        }
+        await tester.tap(find.byTooltip('打开播放页'));
+        await _pumpUi(tester);
+        final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
+        final closing = await tester.startGesture(
+          tester.getCenter(
+            find.byKey(const ValueKey('player-cover-menu-button')),
+          ),
+        );
+        await closing.moveBy(const Offset(0, 20));
+        await tester.pump();
+        await closing.moveBy(const Offset(0, 240));
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(harness.location, '/player');
+        await closing.up();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 30));
+        expect(harness.location, '/settings');
+        final beforeProgress = player.progress.value;
+        expect(beforeProgress, inExclusiveRange(0, 1));
+        final scrollable = tester.state<ScrollableState>(
+          find
+              .descendant(
+                of: find.byType(SettingsPage),
+                matching: find.byType(Scrollable),
+              )
+              .first,
+        );
+        final beforeOffset = scrollable.position.pixels;
+        final newTouch = await tester.startGesture(
+          tester.getCenter(find.byKey(const ValueKey('player-shared-cover'))),
+        );
+        await newTouch.moveBy(const Offset(0, -20));
+        await tester.pump(const Duration(milliseconds: 16));
+        await newTouch.moveBy(const Offset(0, -120));
+        await tester.pump(const Duration(milliseconds: 16));
+        expect(scrollable.position.pixels, greaterThan(beforeOffset));
+        expect(player.progress.value, lessThan(beforeProgress));
+        await newTouch.up();
+        await _pumpUi(tester);
+        expect(player.progress.value, 0);
+        expect(harness.location, '/settings');
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    testWidgets(
+      'closing cover stays opaque above capsule chrome (native=$native)',
+      (tester) async {
+        final captureKey = GlobalKey();
+        final bytes = base64Decode(
+          'iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAN0lEQVR4nO3QQREAMAgDQYoKZCGxTstUBZ+Ngcvsqb4vFpebcQcIECBAgAABAgQIECBAgACBLzDAagJHFpD83wAAAABJRU5ErkJggg==',
+        );
+        final state = _playing.copyWith(
+          playing: false,
+          track: PlayerTrack(
+            id: 'opaque-cover',
+            kind: PlayerTrackKind.localFile,
+            title: '封面测试',
+            artist: '测试',
+            album: '测试',
+            sourceLabel: '本地',
+            qualityLabel: 'flac',
+            coverBytes: bytes,
+          ),
+        );
+        await _pumpApp(
+          tester,
+          native: native,
+          initialState: state,
+          captureKey: captureKey,
+        );
+        if (!native) {
+          await tester.drag(find.byType(BottomToolbar), const Offset(-180, 0));
+          await _pumpUi(tester);
+        }
+        await tester.runAsync(
+          () => precacheImage(
+            ResizeImage(MemoryImage(bytes), width: 480, height: 480),
+            tester.element(find.byType(MiniPlayerBar)),
+          ),
+        );
+        await tester.pump();
+        final anchor = find.descendant(
+          of: find.byType(MiniPlayerBar),
+          matching: find.byType(PlayerCoverAnchor),
+        );
+        expect(
+          await _coverPixel(tester, captureKey, tester.getCenter(anchor)),
+          [24, 80, 160, 255],
+        );
+        await tester.tap(find.byTooltip('打开播放页'));
+        await _pumpUi(tester);
+        await tester.binding.handlePopRoute();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        final p = tester
+            .widget<PlayerPage>(find.byType(PlayerPage))
+            .progress
+            .value;
+        expect(p, inExclusiveRange(0, .12));
+        final flight = find.byKey(const ValueKey('player-shared-cover'));
+        expect(
+          await _coverPixel(tester, captureKey, tester.getCenter(flight)),
+          [24, 80, 160, 255],
+        );
+        await _pumpUi(tester);
+        expect(
+          await _coverPixel(tester, captureKey, tester.getCenter(anchor)),
+          [24, 80, 160, 255],
+        );
+        expect(tester.takeException(), isNull);
+      },
+    );
+  }
+
+  testWidgets(
+    'an explicit capsule tap can reopen the player during its closing tail',
+    (tester) async {
+      final harness = await _pumpApp(tester);
+      await tester.tap(find.byTooltip('打开播放页'));
+      await _pumpUi(tester);
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      final player = tester.widget<PlayerPage>(find.byType(PlayerPage));
+      expect(player.progress.value, inExclusiveRange(0, .2));
+      await tester.tap(find.byTooltip('打开播放页'));
+      await _pumpUi(tester);
+      expect(harness.location, '/player');
+      expect(player.progress.value, 1);
+      await tester.binding.handlePopRoute();
+      await _pumpUi(tester);
+      expect(harness.location, '/settings');
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'native controls recover after keyboard and search-player return',
+    (tester) async {
+      final harness = await _pumpApp(tester, initialLocation: '/songs/search');
+      tester.view.viewInsets = const FakeViewPadding(bottom: 280);
+      await _pumpUi(tester);
+      expect(_miniPlayer.hitTestable(), findsNothing);
+      expect(find.byType(NavigationBar).hitTestable(), findsNothing);
+      tester.view.resetViewInsets();
+      await _pumpUi(tester);
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+
+      await tester.tap(find.byType(SearchBar));
+      await _pumpUi(tester);
+      expect(_miniPlayer.hitTestable(), findsNothing);
+      openPlayer(
+        tester.element(find.byType(SearchBar)),
+        returnLocation: '/songs/search',
+      );
+      await _pumpUi(tester);
+      await tester.binding.handlePopRoute();
+      await _pumpUi(tester);
+      expect(harness.location, '/songs/search');
+      expect(
+        tester.widget<SearchBar>(find.byType(SearchBar)).focusNode?.hasFocus,
+        isFalse,
+      );
+      expect(_miniPlayer.hitTestable(), findsOneWidget);
+      expect(find.byType(NavigationBar).hitTestable(), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  for (final size in [const Size(320, 640), const Size(900, 500)]) {
+    testWidgets('native controls fit $size with safe area and large text', (
+      tester,
+    ) async {
+      await _pumpApp(
+        tester,
+        size: size,
+        textScale: 2,
+        initialLocation: '/downloads',
+      );
+      final playerRect = tester.getRect(_miniPlayer);
+      final navigationRect = tester.getRect(find.byType(NavigationBar));
+      expect(playerRect.left, greaterThanOrEqualTo(14));
+      expect(
+        tester.getCenter(find.byType(MiniPlayerBar)).dy,
+        closeTo(playerRect.center.dy, 0.01),
+      );
+      expect(playerRect.right, lessThanOrEqualTo(size.width - 14));
+      expect(playerRect.bottom, lessThan(navigationRect.top));
+      expect(navigationRect.bottom, size.height);
+      expect(tester.takeException(), isNull);
+    });
+  }
+}
+
+const _track = PlayerTrack(
+  id: 'native-navigation-test',
+  kind: PlayerTrackKind.localFile,
+  title: '当前歌曲',
+  artist: '测试歌手',
+  album: '测试专辑',
+  sourceLabel: '本地',
+  qualityLabel: 'flac',
+);
+const _playing = PlayerState(
+  track: _track,
+  playing: true,
+  duration: Duration(minutes: 3),
+  canPlayPrevious: true,
+  canPlayNext: true,
+);
+
+class _PlayerController extends PlayerController {
+  _PlayerController(super.ref, PlayerState initial) {
+    state = initial;
+  }
+
+  int nextCalls = 0;
+  int previousCalls = 0;
+  PlayerState get snapshot => state;
+  void seed(PlayerState value) => state = value;
+
+  @override
+  Future<void> playNext() async {
+    nextCalls++;
+  }
+
+  @override
+  Future<void> playPrevious() async {
+    previousCalls++;
+  }
+}
+
+class _Harness {
+  const _Harness(this.router, this.controller);
+  final GoRouter router;
+  final _PlayerController controller;
+  String get location => router.routeInformationProvider.value.uri.toString();
+}
+
+Future<_Harness> _pumpApp(
+  WidgetTester tester, {
+  bool native = true,
+  String initialLocation = '/settings',
+  PlayerState initialState = _playing,
+  Size size = const Size(390, 844),
+  double textScale = 1,
+  GlobalKey? captureKey,
+}) async {
+  tester.view.devicePixelRatio = 1;
+  tester.view.physicalSize = size;
+  tester.view.padding = const FakeViewPadding(bottom: 24);
+  tester.view.viewPadding = const FakeViewPadding(bottom: 24);
+  addTearDown(() {
+    tester.view.resetDevicePixelRatio();
+    tester.view.resetPhysicalSize();
+    tester.view.resetPadding();
+    tester.view.resetViewPadding();
+    tester.view.resetViewInsets();
+  });
+  SharedPreferences.setMockInitialValues({
+    if (native) 'use_native_navigation': true,
+    'discovery_source_order': ['kw', 'kg', 'tx', 'wy', 'mg'],
+  });
+  final prefs = await SharedPreferences.getInstance();
+  final audioHandler = PlayerAudioHandler();
+  final router = createAppRouter(initialLocation: initialLocation);
+  late _PlayerController controller;
+  addTearDown(() {
+    router.dispose();
+    unawaited(audioHandler.disposeHandler());
+  });
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        sharedPreferencesProvider.overrideWithValue(prefs),
+        playerAudioHandlerProvider.overrideWithValue(audioHandler),
+        playerControllerProvider.overrideWith(
+          (ref) => controller = _PlayerController(ref, initialState),
+        ),
+        songsSearchAutoFocusProvider.overrideWith((ref) => false),
+      ],
+      child: MaterialApp.router(
+        theme: AppTheme.light(),
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: TextScaler.linear(textScale)),
+          child: RepaintBoundary(key: captureKey, child: child!),
+        ),
+        routerConfig: router,
+      ),
+    ),
+  );
+  await _pumpUi(tester);
+  // Audio-handler initial streams settle before applying the test transport state.
+  ProviderScope.containerOf(
+    tester.element(find.byType(AppShell)),
+  ).read(playerControllerProvider);
+  controller.seed(initialState);
+  await _pumpUi(tester);
+  return _Harness(router, controller);
+}
+
+Future<void> _tapTab(WidgetTester tester, String label) async {
+  await tester.tap(
+    find.descendant(of: find.byType(NavigationBar), matching: find.text(label)),
+  );
+  await _pumpUi(tester);
+}
+
+Future<void> _pumpUi(WidgetTester tester) async {
+  for (var index = 0; index < 12; index++) {
+    await tester.pump(const Duration(milliseconds: 100));
+  }
+}
+
+Future<List<int>?> _coverPixel(
+  WidgetTester tester,
+  GlobalKey key,
+  Offset global,
+) {
+  final boundary =
+      key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+  final point = boundary.globalToLocal(global);
+  return tester.runAsync(() async {
+    final image = await boundary.toImage();
+    try {
+      final bytes = (await image.toByteData(
+        format: ui.ImageByteFormat.rawRgba,
+      ))!;
+      final offset = (point.dy.floor() * image.width + point.dx.floor()) * 4;
+      return List.generate(4, (i) => bytes.getUint8(offset + i));
+    } finally {
+      image.dispose();
+    }
+  });
+}

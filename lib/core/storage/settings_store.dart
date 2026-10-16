@@ -1,0 +1,819 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../api/dio_factory.dart';
+import '../models/enums.dart';
+import '../../theme/color_style.dart';
+import '../../theme/custom_theme.dart';
+import '../../theme/seed_palette.dart';
+import 'base_url.dart';
+
+export 'base_url.dart';
+
+const String _kDownloadDirKey = 'download_dir';
+const String _kLocalMusicDirKey = 'local_music_dir';
+const String _kUseBuiltInSourceFilePickerKey =
+    'use_built_in_source_file_picker';
+const String _kThemeModeKey = 'theme_mode';
+const String _kThemeSeedKey = 'theme_seed_argb';
+const String _kColorStyleKey = 'theme_color_style';
+const String _kUseDynamicColorKey = 'use_dynamic_color';
+const String _kCustomThemeKey = 'custom_theme';
+const String _kPlaylistArtworkColorsEnabledKey =
+    'playlist_artwork_colors_enabled';
+const String _kFlowingLightEnabledKey = 'flowing_light_enabled';
+const String _kLyricViewBlurDisabledKey = 'lyric_view_blur_disabled';
+const String _kSquareAlbumCoverEnabledKey = 'square_album_cover_enabled';
+const String _kLyricFontWeightKey = 'lyric_font_weight';
+const String _kLyricFontSizeKey = 'lyric_font_size';
+const String _kCarPadModeEnabledKey = 'car_pad_mode_enabled';
+const String _kCarDisplayEnabledKey = 'car_display_enabled';
+const String _kCarDisplaySizeKey = 'car_display_size';
+const String _kAutoPlayOnStartupKey = 'auto_play_on_startup';
+const String _kSkipStartupScreenKey = 'skip_startup_screen';
+const String _kUseNativeNavigationKey = 'use_native_navigation';
+const String _kNavigationModeKey = 'navigation_mode';
+const String _kNetworkAdapterModeKey = 'network_adapter_mode';
+const String _kEnabledSearchSourcesKey = 'enabled_search_source_codes';
+const String _kDiscoverySourceOrderKey = 'discovery_source_order';
+const String _kOnlinePlaybackQualityKey = 'online_playback_quality';
+const String _kBatchDownloadQualityKey = 'batch_download_quality';
+const String _kShowMiniLyricsKey = 'show_mini_lyrics';
+const String _kAllowMixWithOthersKey = 'allow_mix_with_others';
+const String _kBluetoothLyricEnabledKey = 'bluetooth_lyric_enabled';
+const String _kBluetoothFullLyricEnabledKey = 'bluetooth_full_lyric_enabled';
+const String _kBluetoothLyricNoticeSeenKey = 'bluetooth_lyric_notice_seen';
+const String _kDebugModeKey = 'debug_mode';
+const String _kLegacyBaseUrlKey = 'base_url';
+
+const kLyricFontWeightMin = 100.0;
+const kLyricFontWeightMax = 1000.0;
+const kLyricFontWeightDefault = 500.0;
+const kLyricFontSizeMin = 16.0;
+const kLyricFontSizeMax = 56.0;
+const kLyricFontSizeDefault = 32.0;
+
+double normalizeLyricFontWeight(double value) =>
+    (value.clamp(kLyricFontWeightMin, kLyricFontWeightMax) / 100)
+        .roundToDouble() *
+    100;
+
+double normalizeLyricFontSize(double value) =>
+    value.clamp(kLyricFontSizeMin, kLyricFontSizeMax).roundToDouble();
+
+enum AppNavigationMode {
+  singleCapsule('single_capsule', '单胶囊', '原有悬浮菜单与播放条滑动切换'),
+  dualCapsule('dual_capsule', '双胶囊', '播放条与导航菜单独立为上下双胶囊'),
+  native('native', '原生导航', '底部系统级导航栏搭配悬浮播放条');
+
+  const AppNavigationMode(this.code, this.label, this.description);
+
+  final String code;
+  final String label;
+  final String description;
+
+  static AppNavigationMode fromCode(String? code) {
+    for (final mode in values) {
+      if (mode.code == code) return mode;
+    }
+    return singleCapsule;
+  }
+}
+
+@immutable
+class AppSettings {
+  const AppSettings({
+    required this.downloadDir,
+    required this.localMusicDir,
+    this.useBuiltInSourceFilePicker = false,
+    required this.themeMode,
+    required this.themeSeed,
+    required this.colorStyle,
+    required this.useDynamicColor,
+    this.customTheme = const CustomTheme(),
+    this.playlistArtworkColorsEnabled = true,
+    required this.flowingLightEnabled,
+    this.lyricViewBlurDisabled = false,
+    this.squareAlbumCoverEnabled = false,
+    this.lyricFontWeight = kLyricFontWeightDefault,
+    this.lyricFontSize = kLyricFontSizeDefault,
+    required this.carPadModeEnabled,
+    this.carDisplayEnabled = false,
+    this.carDisplaySize = 1.0,
+    this.autoPlayOnStartup = false,
+    this.skipStartupScreen = false,
+    required this.navigationMode,
+    required this.networkAdapterMode,
+    required this.enabledSearchSources,
+    required this.discoverySourceOrder,
+    required this.onlinePlaybackQuality,
+    required this.batchDownloadQuality,
+    required this.showMiniLyrics,
+    required this.allowMixWithOthers,
+    required this.bluetoothLyricEnabled,
+    required this.bluetoothFullLyricEnabled,
+    required this.bluetoothLyricNoticeSeen,
+    required this.debugMode,
+  });
+
+  final String downloadDir;
+  final String localMusicDir;
+  final bool useBuiltInSourceFilePicker;
+  final ThemeMode themeMode;
+  final Color themeSeed;
+  final AppColorStyle colorStyle;
+  final bool useDynamicColor;
+  final CustomTheme customTheme;
+  final bool playlistArtworkColorsEnabled;
+
+  /// Whether the player backdrop animates its extracted colors. Off falls back
+  /// to the static blurred-artwork backdrop.
+  final bool flowingLightEnabled;
+  final bool lyricViewBlurDisabled;
+  final bool squareAlbumCoverEnabled;
+  final double lyricFontWeight;
+  final double lyricFontSize;
+
+  /// Uses the split album-and-lyrics player layout on car displays and pads.
+  /// This is deliberately manual so ordinary large screens retain phone UI.
+  final bool carPadModeEnabled;
+
+  /// Device-local car adaptation, independent of the existing Pad preference.
+  /// Deliberately excluded from appearance sync to other devices.
+  final bool carDisplayEnabled;
+  final double carDisplaySize;
+  final bool autoPlayOnStartup;
+  final bool skipStartupScreen;
+  final AppNavigationMode navigationMode;
+  bool get useNativeNavigation => navigationMode == AppNavigationMode.native;
+  final NetworkAdapterMode networkAdapterMode;
+  final Set<MusicSource> enabledSearchSources;
+  final List<MusicSource> discoverySourceOrder;
+  final OnlinePlaybackQuality onlinePlaybackQuality;
+  final OnlinePlaybackQuality batchDownloadQuality;
+  final bool showMiniLyrics;
+
+  /// Whether playback should avoid taking exclusive audio focus so other apps
+  /// can continue playing at the same time.
+  final bool allowMixWithOthers;
+  final bool bluetoothLyricEnabled;
+  final bool bluetoothFullLyricEnabled;
+  final bool bluetoothLyricNoticeSeen;
+  final bool debugMode;
+
+  AppSettings copyWith({
+    String? downloadDir,
+    String? localMusicDir,
+    bool? useBuiltInSourceFilePicker,
+    ThemeMode? themeMode,
+    Color? themeSeed,
+    AppColorStyle? colorStyle,
+    bool? useDynamicColor,
+    CustomTheme? customTheme,
+    bool? playlistArtworkColorsEnabled,
+    bool? flowingLightEnabled,
+    bool? lyricViewBlurDisabled,
+    bool? squareAlbumCoverEnabled,
+    double? lyricFontWeight,
+    double? lyricFontSize,
+    bool? carPadModeEnabled,
+    bool? carDisplayEnabled,
+    double? carDisplaySize,
+    bool? autoPlayOnStartup,
+    bool? skipStartupScreen,
+    AppNavigationMode? navigationMode,
+    bool? useNativeNavigation,
+    NetworkAdapterMode? networkAdapterMode,
+    Set<MusicSource>? enabledSearchSources,
+    List<MusicSource>? discoverySourceOrder,
+    OnlinePlaybackQuality? onlinePlaybackQuality,
+    OnlinePlaybackQuality? batchDownloadQuality,
+    bool? showMiniLyrics,
+    bool? allowMixWithOthers,
+    bool? bluetoothLyricEnabled,
+    bool? bluetoothFullLyricEnabled,
+    bool? bluetoothLyricNoticeSeen,
+    bool? debugMode,
+  }) => AppSettings(
+    downloadDir: downloadDir ?? this.downloadDir,
+    localMusicDir: localMusicDir ?? this.localMusicDir,
+    useBuiltInSourceFilePicker:
+        useBuiltInSourceFilePicker ?? this.useBuiltInSourceFilePicker,
+    themeMode: themeMode ?? this.themeMode,
+    themeSeed: themeSeed ?? this.themeSeed,
+    colorStyle: colorStyle ?? this.colorStyle,
+    useDynamicColor: useDynamicColor ?? this.useDynamicColor,
+    customTheme: customTheme ?? this.customTheme,
+    playlistArtworkColorsEnabled:
+        playlistArtworkColorsEnabled ?? this.playlistArtworkColorsEnabled,
+    flowingLightEnabled: flowingLightEnabled ?? this.flowingLightEnabled,
+    lyricViewBlurDisabled: lyricViewBlurDisabled ?? this.lyricViewBlurDisabled,
+    squareAlbumCoverEnabled:
+        squareAlbumCoverEnabled ?? this.squareAlbumCoverEnabled,
+    lyricFontWeight: lyricFontWeight ?? this.lyricFontWeight,
+    lyricFontSize: lyricFontSize ?? this.lyricFontSize,
+    carPadModeEnabled: carPadModeEnabled ?? this.carPadModeEnabled,
+    carDisplayEnabled: carDisplayEnabled ?? this.carDisplayEnabled,
+    carDisplaySize: carDisplaySize ?? this.carDisplaySize,
+    autoPlayOnStartup: autoPlayOnStartup ?? this.autoPlayOnStartup,
+    skipStartupScreen: skipStartupScreen ?? this.skipStartupScreen,
+    navigationMode:
+        navigationMode ??
+        (useNativeNavigation != null
+            ? (useNativeNavigation
+                  ? AppNavigationMode.native
+                  : AppNavigationMode.singleCapsule)
+            : this.navigationMode),
+    networkAdapterMode: networkAdapterMode ?? this.networkAdapterMode,
+    enabledSearchSources: enabledSearchSources ?? this.enabledSearchSources,
+    discoverySourceOrder: discoverySourceOrder ?? this.discoverySourceOrder,
+    onlinePlaybackQuality: onlinePlaybackQuality ?? this.onlinePlaybackQuality,
+    batchDownloadQuality: batchDownloadQuality ?? this.batchDownloadQuality,
+    showMiniLyrics: showMiniLyrics ?? this.showMiniLyrics,
+    allowMixWithOthers: allowMixWithOthers ?? this.allowMixWithOthers,
+    bluetoothLyricEnabled: bluetoothLyricEnabled ?? this.bluetoothLyricEnabled,
+    bluetoothFullLyricEnabled:
+        bluetoothFullLyricEnabled ?? this.bluetoothFullLyricEnabled,
+    bluetoothLyricNoticeSeen:
+        bluetoothLyricNoticeSeen ?? this.bluetoothLyricNoticeSeen,
+    debugMode: debugMode ?? this.debugMode,
+  );
+
+  static const AppSettings fallback = AppSettings(
+    downloadDir: kDefaultDownloadDir,
+    localMusicDir: kDefaultDownloadDir,
+    themeMode: ThemeMode.system,
+    themeSeed: SeedPalette.defaultSeed,
+    colorStyle: AppColorStyle.fallback,
+    useDynamicColor: false,
+    flowingLightEnabled: true,
+    carPadModeEnabled: false,
+    autoPlayOnStartup: false,
+    skipStartupScreen: false,
+    navigationMode: AppNavigationMode.singleCapsule,
+    networkAdapterMode: NetworkAdapterMode.system,
+    enabledSearchSources: kDefaultEnabledSearchSources,
+    discoverySourceOrder: kDefaultDiscoverySourceOrder,
+    onlinePlaybackQuality: OnlinePlaybackQuality.highest,
+    batchDownloadQuality: OnlinePlaybackQuality.highest,
+    showMiniLyrics: true,
+    allowMixWithOthers: false,
+    bluetoothLyricEnabled: false,
+    bluetoothFullLyricEnabled: false,
+    bluetoothLyricNoticeSeen: false,
+    debugMode: false,
+  );
+}
+
+final sharedPreferencesProvider = Provider<SharedPreferences>((ref) {
+  throw UnimplementedError('Override sharedPreferencesProvider before runApp');
+});
+
+class SettingsNotifier extends Notifier<AppSettings> {
+  late SharedPreferences _prefs;
+
+  @override
+  AppSettings build() {
+    _prefs = ref.read(sharedPreferencesProvider);
+    hydrateNetworkAdapterPreference(_prefs);
+    if (_prefs.containsKey(_kLegacyBaseUrlKey)) {
+      unawaited(_prefs.remove(_kLegacyBaseUrlKey));
+    }
+    final downloadDir =
+        _prefs.getString(_kDownloadDirKey) ?? kDefaultDownloadDir;
+    return AppSettings(
+      downloadDir: downloadDir,
+      localMusicDir: _prefs.getString(_kLocalMusicDirKey) ?? downloadDir,
+      useBuiltInSourceFilePicker:
+          _prefs.getBool(_kUseBuiltInSourceFilePickerKey) ?? false,
+      themeMode: _decodeThemeMode(_prefs.getString(_kThemeModeKey)),
+      themeSeed: Color(
+        _prefs.getInt(_kThemeSeedKey) ?? SeedPalette.defaultSeed.toARGB32(),
+      ),
+      colorStyle: AppColorStyle.fromCode(_prefs.getString(_kColorStyleKey)),
+      useDynamicColor: _prefs.getBool(_kUseDynamicColorKey) ?? false,
+      customTheme: _readCustomTheme(),
+      playlistArtworkColorsEnabled:
+          _prefs.getBool(_kPlaylistArtworkColorsEnabledKey) ?? true,
+      flowingLightEnabled: _prefs.getBool(_kFlowingLightEnabledKey) ?? true,
+      lyricViewBlurDisabled:
+          _prefs.getBool(_kLyricViewBlurDisabledKey) ?? false,
+      squareAlbumCoverEnabled:
+          _prefs.getBool(_kSquareAlbumCoverEnabledKey) ?? false,
+      lyricFontWeight: _validLyricFontWeight(_prefs.get(_kLyricFontWeightKey))
+          ? normalizeLyricFontWeight(
+              (_prefs.get(_kLyricFontWeightKey) as num).toDouble(),
+            )
+          : kLyricFontWeightDefault,
+      lyricFontSize: _validLyricFontSize(_prefs.get(_kLyricFontSizeKey))
+          ? normalizeLyricFontSize(
+              (_prefs.get(_kLyricFontSizeKey) as num).toDouble(),
+            )
+          : kLyricFontSizeDefault,
+      carPadModeEnabled: _prefs.getBool(_kCarPadModeEnabledKey) ?? false,
+      carDisplayEnabled: _prefs.getBool(_kCarDisplayEnabledKey) ?? false,
+      carDisplaySize: _decodeCarDisplaySize(
+        _prefs.getDouble(_kCarDisplaySizeKey),
+      ),
+      autoPlayOnStartup: _prefs.getBool(_kAutoPlayOnStartupKey) ?? false,
+      skipStartupScreen: _prefs.getBool(_kSkipStartupScreenKey) ?? false,
+      navigationMode: _decodeNavigationMode(_prefs),
+      networkAdapterMode: NetworkAdapterPreference.current,
+      enabledSearchSources: decodeEnabledSearchSources(
+        _prefs.getStringList(_kEnabledSearchSourcesKey),
+      ),
+      discoverySourceOrder: decodeDiscoverySourceOrder(
+        _prefs.getStringList(_kDiscoverySourceOrderKey),
+      ),
+      onlinePlaybackQuality: OnlinePlaybackQuality.fromCode(
+        _prefs.getString(_kOnlinePlaybackQualityKey),
+      ),
+      batchDownloadQuality: OnlinePlaybackQuality.fromCode(
+        _prefs.getString(_kBatchDownloadQualityKey),
+      ),
+      showMiniLyrics: _prefs.getBool(_kShowMiniLyricsKey) ?? true,
+      allowMixWithOthers: readAllowMixWithOthersPreference(_prefs),
+      bluetoothLyricEnabled:
+          _prefs.getBool(_kBluetoothLyricEnabledKey) ?? false,
+      bluetoothFullLyricEnabled:
+          _prefs.getBool(_kBluetoothFullLyricEnabledKey) ?? false,
+      bluetoothLyricNoticeSeen:
+          _prefs.getBool(_kBluetoothLyricNoticeSeenKey) ?? false,
+      debugMode: _prefs.getBool(_kDebugModeKey) ?? false,
+    );
+  }
+
+  static AppNavigationMode _decodeNavigationMode(SharedPreferences prefs) {
+    final code = prefs.getString(_kNavigationModeKey);
+    if (code != null) return AppNavigationMode.fromCode(code);
+    return (prefs.getBool(_kUseNativeNavigationKey) ?? false)
+        ? AppNavigationMode.native
+        : AppNavigationMode.singleCapsule;
+  }
+
+  CustomTheme _readCustomTheme() {
+    final raw = _prefs.getString(_kCustomThemeKey);
+    if (raw == null) return const CustomTheme();
+    try {
+      return CustomTheme.fromJson(jsonDecode(raw));
+    } on FormatException {
+      return const CustomTheme();
+    }
+  }
+
+  Future<void> setDownloadDir(String value) async {
+    final localMusicFollowsDownload =
+        !_prefs.containsKey(_kLocalMusicDirKey) ||
+        state.localMusicDir == state.downloadDir;
+    await _prefs.setString(_kDownloadDirKey, value);
+    if (localMusicFollowsDownload) {
+      await _prefs.setString(_kLocalMusicDirKey, value);
+      state = state.copyWith(downloadDir: value, localMusicDir: value);
+    } else {
+      state = state.copyWith(downloadDir: value);
+    }
+  }
+
+  Future<void> setLocalMusicDir(String value) async {
+    await _prefs.setString(_kLocalMusicDirKey, value);
+    state = state.copyWith(localMusicDir: value);
+  }
+
+  Future<void> setUseBuiltInSourceFilePicker(bool value) async {
+    await _prefs.setBool(_kUseBuiltInSourceFilePickerKey, value);
+    state = state.copyWith(useBuiltInSourceFilePicker: value);
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    await _prefs.setString(_kThemeModeKey, _encodeThemeMode(mode));
+    state = state.copyWith(themeMode: mode);
+  }
+
+  Future<void> setThemeSeed(Color color) async {
+    await _prefs.setInt(_kThemeSeedKey, color.toARGB32());
+    state = state.copyWith(themeSeed: color);
+  }
+
+  Future<void> setColorStyle(AppColorStyle style) async {
+    await _prefs.setString(_kColorStyleKey, style.code);
+    state = state.copyWith(colorStyle: style);
+  }
+
+  Future<void> setUseDynamicColor(bool value) async {
+    await _prefs.setBool(_kUseDynamicColorKey, value);
+    state = state.copyWith(useDynamicColor: value);
+  }
+
+  Future<void> setCustomTheme(CustomTheme theme) async {
+    await _prefs.setString(_kCustomThemeKey, jsonEncode(theme.toJson()));
+    final firstEnabled = theme.enabled && !state.customTheme.enabled;
+    if (firstEnabled) {
+      await _prefs.setBool(_kPlaylistArtworkColorsEnabledKey, false);
+    }
+    state = state.copyWith(
+      customTheme: theme,
+      playlistArtworkColorsEnabled: firstEnabled
+          ? false
+          : state.playlistArtworkColorsEnabled,
+    );
+  }
+
+  Future<void> setPlaylistArtworkColorsEnabled(bool value) async {
+    await _prefs.setBool(_kPlaylistArtworkColorsEnabledKey, value);
+    state = state.copyWith(playlistArtworkColorsEnabled: value);
+  }
+
+  Future<void> setFlowingLightEnabled(bool value) async {
+    await _prefs.setBool(_kFlowingLightEnabledKey, value);
+    state = state.copyWith(flowingLightEnabled: value);
+  }
+
+  Future<void> setLyricViewBlurDisabled(bool value) async {
+    await _prefs.setBool(_kLyricViewBlurDisabledKey, value);
+    state = state.copyWith(lyricViewBlurDisabled: value);
+  }
+
+  Future<void> setSquareAlbumCoverEnabled(bool value) async {
+    await _prefs.setBool(_kSquareAlbumCoverEnabledKey, value);
+    state = state.copyWith(squareAlbumCoverEnabled: value);
+  }
+
+  static bool _validLyricFontWeight(Object? value) =>
+      value is num &&
+      value.isFinite &&
+      value >= kLyricFontWeightMin &&
+      value <= kLyricFontWeightMax;
+
+  static bool _validLyricFontSize(Object? value) =>
+      value is num &&
+      value.isFinite &&
+      value >= kLyricFontSizeMin &&
+      value <= kLyricFontSizeMax;
+
+  Future<void> setLyricFontStyle({
+    required double weight,
+    required double size,
+  }) async {
+    if (!_validLyricFontWeight(weight) || !_validLyricFontSize(size)) {
+      throw ArgumentError('歌词字体粗细或大小超出范围');
+    }
+    final nextWeight = normalizeLyricFontWeight(weight);
+    final nextSize = normalizeLyricFontSize(size);
+    if (state.lyricFontWeight == nextWeight &&
+        state.lyricFontSize == nextSize) {
+      return;
+    }
+    await _prefs.setDouble(_kLyricFontWeightKey, nextWeight);
+    await _prefs.setDouble(_kLyricFontSizeKey, nextSize);
+    state = state.copyWith(
+      lyricFontWeight: nextWeight,
+      lyricFontSize: nextSize,
+    );
+  }
+
+  Future<void> setCarPadModeEnabled(bool value) async {
+    await _prefs.setBool(_kCarPadModeEnabledKey, value);
+    state = state.copyWith(carPadModeEnabled: value);
+  }
+
+  static double _decodeCarDisplaySize(double? value) =>
+      value != null && value.isFinite ? value.clamp(0.85, 1.25) : 1.0;
+
+  Future<void> setCarDisplayEnabled(bool value) async {
+    await _prefs.setBool(_kCarDisplayEnabledKey, value);
+    state = state.copyWith(carDisplayEnabled: value);
+  }
+
+  Future<void> setCarDisplaySize(double value) async {
+    final size = _decodeCarDisplaySize(value);
+    await _prefs.setDouble(_kCarDisplaySizeKey, size);
+    state = state.copyWith(carDisplaySize: size);
+  }
+
+  Future<void> setAutoPlayOnStartup(bool value) async {
+    await _prefs.setBool(_kAutoPlayOnStartupKey, value);
+    state = state.copyWith(autoPlayOnStartup: value);
+  }
+
+  Future<void> setSkipStartupScreen(bool value) async {
+    await _prefs.setBool(_kSkipStartupScreenKey, value);
+    state = state.copyWith(skipStartupScreen: value);
+  }
+
+  Future<void> setNavigationMode(AppNavigationMode mode) async {
+    await _prefs.setString(_kNavigationModeKey, mode.code);
+    await _prefs.setBool(
+      _kUseNativeNavigationKey,
+      mode == AppNavigationMode.native,
+    );
+    state = state.copyWith(navigationMode: mode);
+  }
+
+  Future<void> setUseNativeNavigation(bool value) async {
+    await setNavigationMode(
+      value ? AppNavigationMode.native : AppNavigationMode.singleCapsule,
+    );
+  }
+
+  Map<String, dynamic> exportAppearanceForSync() => {
+    'themeMode': _encodeThemeMode(state.themeMode),
+    'themeSeedArgb': state.themeSeed.toARGB32(),
+    'colorStyle': state.colorStyle.code,
+    'useDynamicColor': state.useDynamicColor,
+    'customTheme': state.customTheme.toJson(),
+    'playlistArtworkColorsEnabled': state.playlistArtworkColorsEnabled,
+    'flowingLightEnabled': state.flowingLightEnabled,
+    'lyricViewBlurDisabled': state.lyricViewBlurDisabled,
+    'squareAlbumCoverEnabled': state.squareAlbumCoverEnabled,
+    'lyricFontWeight': state.lyricFontWeight,
+    'lyricFontSize': state.lyricFontSize,
+  };
+
+  Future<void> applyAppearanceFromSync(Object value) async {
+    if (value is! Map) throw const FormatException('云端外观设置格式无效');
+    final json = Map<String, dynamic>.from(value);
+    final rawMode = json['themeMode'];
+    final rawSeed = json['themeSeedArgb'];
+    final rawDynamic = json['useDynamicColor'];
+    if (rawMode is! String ||
+        rawSeed is! int ||
+        rawSeed < 0 ||
+        rawSeed > 0xFFFFFFFF ||
+        rawDynamic is! bool) {
+      throw const FormatException('云端外观设置不完整');
+    }
+    if (!const {'system', 'light', 'dark'}.contains(rawMode)) {
+      throw const FormatException('云端主题模式无效');
+    }
+
+    // colorStyle 是后加的字段：旧版本写的备份没有它，此时保留本机当前风格，
+    // 而不是把它当成损坏数据。
+    final rawStyle = json['colorStyle'];
+    final AppColorStyle? syncedStyle;
+    if (rawStyle == null) {
+      syncedStyle = null;
+    } else if (rawStyle is String && AppColorStyle.isKnownCode(rawStyle)) {
+      syncedStyle = AppColorStyle.fromCode(rawStyle);
+    } else {
+      throw const FormatException('云端配色风格无效');
+    }
+
+    // flowingLightEnabled 同样是后加字段，缺失时保留本机开关。
+    final rawFlowingLight = json['flowingLightEnabled'];
+    final bool? syncedFlowingLight;
+    if (rawFlowingLight == null) {
+      syncedFlowingLight = null;
+    } else if (rawFlowingLight is bool) {
+      syncedFlowingLight = rawFlowingLight;
+    } else {
+      throw const FormatException('云端流光设置无效');
+    }
+
+    final rawLyricBlurDisabled = json['lyricViewBlurDisabled'];
+    if (json.containsKey('lyricViewBlurDisabled') &&
+        rawLyricBlurDisabled is! bool) {
+      throw const FormatException('云端歌词视图模糊设置无效');
+    }
+    final rawSquareCover = json['squareAlbumCoverEnabled'];
+    if (json.containsKey('squareAlbumCoverEnabled') &&
+        rawSquareCover is! bool) {
+      throw const FormatException('云端专辑封面设置无效');
+    }
+
+    final syncedTheme = json.containsKey('customTheme')
+        ? CustomTheme.fromJson(json['customTheme'])
+        : null;
+    final rawLyricWeight = json['lyricFontWeight'];
+    if (json.containsKey('lyricFontWeight') &&
+        !_validLyricFontWeight(rawLyricWeight)) {
+      throw const FormatException('云端歌词字体粗细无效');
+    }
+    final syncedLyricWeight = rawLyricWeight == null
+        ? null
+        : normalizeLyricFontWeight((rawLyricWeight as num).toDouble());
+    final rawLyricSize = json['lyricFontSize'];
+    if (json.containsKey('lyricFontSize') &&
+        !_validLyricFontSize(rawLyricSize)) {
+      throw const FormatException('云端歌词字体大小无效');
+    }
+    final syncedLyricSize = rawLyricSize == null
+        ? null
+        : normalizeLyricFontSize((rawLyricSize as num).toDouble());
+    final rawPlaylistColors = json['playlistArtworkColorsEnabled'];
+    if (json.containsKey('playlistArtworkColorsEnabled') &&
+        rawPlaylistColors is! bool) {
+      throw const FormatException('云端歌单动态配色设置无效');
+    }
+    final syncedPlaylistColors =
+        rawPlaylistColors as bool? ??
+        (syncedTheme?.enabled == true && !state.customTheme.enabled
+            ? false
+            : state.playlistArtworkColorsEnabled);
+
+    final next = state.copyWith(
+      themeMode: _decodeThemeMode(rawMode),
+      themeSeed: Color(rawSeed),
+      colorStyle: syncedStyle,
+      useDynamicColor: rawDynamic,
+      customTheme: syncedTheme,
+      playlistArtworkColorsEnabled: syncedPlaylistColors,
+      flowingLightEnabled: syncedFlowingLight,
+      lyricViewBlurDisabled: rawLyricBlurDisabled as bool?,
+      squareAlbumCoverEnabled: rawSquareCover as bool?,
+      lyricFontWeight: syncedLyricWeight,
+      lyricFontSize: syncedLyricSize,
+    );
+    await _prefs.setString(_kThemeModeKey, rawMode);
+    await _prefs.setInt(_kThemeSeedKey, rawSeed);
+    if (syncedStyle != null) {
+      await _prefs.setString(_kColorStyleKey, syncedStyle.code);
+    }
+    if (syncedFlowingLight != null) {
+      await _prefs.setBool(_kFlowingLightEnabledKey, syncedFlowingLight);
+    }
+    if (rawLyricBlurDisabled != null) {
+      await _prefs.setBool(_kLyricViewBlurDisabledKey, rawLyricBlurDisabled);
+    }
+    if (rawSquareCover != null) {
+      await _prefs.setBool(_kSquareAlbumCoverEnabledKey, rawSquareCover);
+    }
+    if (syncedLyricWeight != null) {
+      await _prefs.setDouble(_kLyricFontWeightKey, syncedLyricWeight);
+    }
+    if (syncedLyricSize != null) {
+      await _prefs.setDouble(_kLyricFontSizeKey, syncedLyricSize);
+    }
+    await _prefs.setBool(_kUseDynamicColorKey, rawDynamic);
+    if (syncedTheme != null) {
+      await _prefs.setString(
+        _kCustomThemeKey,
+        jsonEncode(syncedTheme.toJson()),
+      );
+    }
+    await _prefs.setBool(
+      _kPlaylistArtworkColorsEnabledKey,
+      syncedPlaylistColors,
+    );
+    state = next;
+  }
+
+  Future<void> setNetworkAdapterMode(NetworkAdapterMode mode) async {
+    NetworkAdapterPreference.current = mode;
+    await _prefs.setString(_kNetworkAdapterModeKey, mode.code);
+    state = state.copyWith(networkAdapterMode: mode);
+  }
+
+  Future<bool> setSearchSourceEnabled(MusicSource source, bool enabled) async {
+    if (!kManageableSearchSources.contains(source)) return false;
+    final next = {...state.enabledSearchSources};
+    enabled ? next.add(source) : next.remove(source);
+    if (next.isEmpty) return false;
+
+    final ordered = {
+      for (final candidate in kManageableSearchSources)
+        if (next.contains(candidate)) candidate,
+    };
+    await _prefs.setStringList(
+      _kEnabledSearchSourcesKey,
+      ordered.map((candidate) => candidate.code).toList(growable: false),
+    );
+    state = state.copyWith(
+      enabledSearchSources: Set<MusicSource>.unmodifiable(ordered),
+    );
+    return true;
+  }
+
+  Future<void> setDiscoverySourceOrder(Iterable<MusicSource> sources) async {
+    final order = normalizeDiscoverySourceOrder(sources);
+    await _prefs.setStringList(
+      _kDiscoverySourceOrderKey,
+      order.map((source) => source.code).toList(growable: false),
+    );
+    state = state.copyWith(discoverySourceOrder: order);
+  }
+
+  Future<void> setOnlinePlaybackQuality(OnlinePlaybackQuality quality) async {
+    await _prefs.setString(_kOnlinePlaybackQualityKey, quality.code);
+    state = state.copyWith(onlinePlaybackQuality: quality);
+  }
+
+  Future<void> setBatchDownloadQuality(OnlinePlaybackQuality quality) async {
+    await _prefs.setString(_kBatchDownloadQualityKey, quality.code);
+    state = state.copyWith(batchDownloadQuality: quality);
+  }
+
+  Future<void> setShowMiniLyrics(bool value) async {
+    await _prefs.setBool(_kShowMiniLyricsKey, value);
+    state = state.copyWith(showMiniLyrics: value);
+  }
+
+  Future<void> setAllowMixWithOthers(bool value) async {
+    await _prefs.setBool(_kAllowMixWithOthersKey, value);
+    state = state.copyWith(allowMixWithOthers: value);
+  }
+
+  Future<void> setBluetoothLyricEnabled(bool value) async {
+    await _prefs.setBool(_kBluetoothLyricEnabledKey, value);
+    state = state.copyWith(bluetoothLyricEnabled: value);
+  }
+
+  Future<void> setBluetoothFullLyricEnabled(bool value) async {
+    await _prefs.setBool(_kBluetoothFullLyricEnabledKey, value);
+    state = state.copyWith(bluetoothFullLyricEnabled: value);
+  }
+
+  Future<void> markBluetoothLyricNoticeSeen() async {
+    if (state.bluetoothLyricNoticeSeen) return;
+    await _prefs.setBool(_kBluetoothLyricNoticeSeenKey, true);
+    state = state.copyWith(bluetoothLyricNoticeSeen: true);
+  }
+
+  Future<void> setDebugMode(bool value) async {
+    await _prefs.setBool(_kDebugModeKey, value);
+    state = state.copyWith(debugMode: value);
+  }
+}
+
+final settingsProvider = NotifierProvider<SettingsNotifier, AppSettings>(
+  SettingsNotifier.new,
+);
+
+bool readAllowMixWithOthersPreference(SharedPreferences preferences) =>
+    preferences.getBool(_kAllowMixWithOthersKey) ?? false;
+
+String _encodeThemeMode(ThemeMode mode) {
+  switch (mode) {
+    case ThemeMode.system:
+      return 'system';
+    case ThemeMode.light:
+      return 'light';
+    case ThemeMode.dark:
+      return 'dark';
+  }
+}
+
+ThemeMode _decodeThemeMode(String? raw) {
+  switch (raw) {
+    case 'light':
+      return ThemeMode.light;
+    case 'dark':
+      return ThemeMode.dark;
+    default:
+      return ThemeMode.system;
+  }
+}
+
+void hydrateNetworkAdapterPreference(SharedPreferences prefs) {
+  NetworkAdapterPreference.current = NetworkAdapterMode.fromCode(
+    prefs.getString(_kNetworkAdapterModeKey),
+  );
+}
+
+Set<MusicSource> decodeEnabledSearchSources(List<String>? codes) {
+  if (codes == null) return kDefaultEnabledSearchSources;
+  final decoded = <MusicSource>{};
+  for (final code in codes) {
+    final source = MusicSource.tryFromCode(code);
+    if (source != null && kManageableSearchSources.contains(source)) {
+      decoded.add(source);
+    }
+  }
+  if (decoded.isEmpty) return kDefaultEnabledSearchSources;
+  return Set<MusicSource>.unmodifiable({
+    for (final source in kManageableSearchSources)
+      if (decoded.contains(source)) source,
+  });
+}
+
+const List<MusicSource> kDefaultDiscoverySourceOrder = <MusicSource>[
+  MusicSource.wy,
+  MusicSource.tx,
+  MusicSource.kw,
+  MusicSource.kg,
+  MusicSource.mg,
+];
+
+List<MusicSource> decodeDiscoverySourceOrder(List<String>? codes) {
+  if (codes == null) return kDefaultDiscoverySourceOrder;
+  return normalizeDiscoverySourceOrder(
+    codes.map(MusicSource.tryFromCode).nonNulls,
+  );
+}
+
+List<MusicSource> normalizeDiscoverySourceOrder(Iterable<MusicSource> sources) {
+  final order = <MusicSource>[];
+  for (final source in sources) {
+    if (kDefaultDiscoverySourceOrder.contains(source) &&
+        !order.contains(source)) {
+      order.add(source);
+    }
+  }
+  for (final source in kDefaultDiscoverySourceOrder) {
+    if (!order.contains(source)) order.add(source);
+  }
+  return List<MusicSource>.unmodifiable(order);
+}
