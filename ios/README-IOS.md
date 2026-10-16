@@ -18,7 +18,7 @@
 | `packages/music_source_runtime/ios/` | 音源运行时的 iOS 实现（podspec + Swift + `Resources/music_source_preload.js`） | 是 |
 | `packages/music_home_widget/ios/` | 桌面卡片桥（podspec + Swift，写 App Group） | 是 |
 | `tool/fetch_bass_ios.sh` | 构建前下载 BASS iOS 二进制到 `packages/bass_player/ios/Frameworks/` | 是 |
-| `tool/fetch_app_icons.sh` + `tool/fetch_app_icons.py` | 从 `assets/app_icons/*.png` 生成 `ios/Runner/Icons/` | 是 |
+| `tool/fetch_app_icons.sh` + `tool/fetch_app_icons.py` | 从 `assets/app_icons/classic.png` 生成主图标（15 个尺寸）+ 5 套备用图标；只用标准库 | 是 |
 | `tool/patch_xcodeproj.py` | 把新增的 Swift 文件与 Icons 目录接进 `project.pbxproj`（幂等） | 初次需要 |
 | `tool/verify_preload_protocol.mjs` | 用 `node:vm` 验证 `preload.js` 的协议与**执行顺序**（CI 已接入） | 建议每次改 preload 后跑 |
 | `.github/workflows/ios-build.yml` | macOS runner 上编译并产出未签名 IPA | 可选 |
@@ -30,10 +30,11 @@
 
 ## 2. 注意事项
 
-| 不做会怎样 | 必须做的事 |
+| 不跑会怎样 | 必须做的事 |
 |---|---|
 | `pod install` 直接报「未找到 BASS iOS 二进制」 | 构建前先跑 `bash tool/fetch_bass_ios.sh`（需要能访问 `un4seen.com`） |
-| `setAlternateIconName` 失败 / 找不到图标 | 构建前先跑 `bash tool/fetch_app_icons.sh`；且 `ios/Runner/Icons/` 不能被删 |
+| 图标还是 Flutter 默认图 / `setAlternateIconName` 失败 | 构建前先跑 `bash tool/fetch_app_icons.sh`；且 `ios/Runner/Icons/` 不能被删 |
+| 改了 `assets/app_icons/classic.png` 但图标没变 | 手动跑一次 `bash tool/fetch_app_icons.sh`（生成物已入库） |
 | `flutter build ios` 报找不到 `CyShineNativePlugin.swift` | 先跑 `python3 tool/patch_xcodeproj.py`（只在第一次或从上游 rebase 后需要） |
 | 音源在 iOS 与 Android 上行为不一致 | 改 `android/app/src/main/assets/music_source_preload.js` 后，必须同步 `packages/music_source_runtime/ios/Resources/music_source_preload.js`（CI 有 md5 校验会拦） |
 | 编译不过 | Flutter 必须 **≥ 3.41.0**（本项目用 3.47.7 验证）；Xcode 15+；必须用 `Runner.xcworkspace` 而不是 `Runner.xcodeproj` |
@@ -134,6 +135,9 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | `framework not found CommonCrypto` | iOS SDK 没有 `CommonCrypto.framework`，符号在 libSystem 里，Swift 直接 `import CommonCrypto` 即可。**不要**写进 podspec 的 `s.frameworks` |
 | `import CBass` 报 no such module | BASS 的 xcframework **不含头文件**，必须有 `Classes/CHeaders/{CBassShim.h,module.modulemap}` + podspec 里的 `SWIFT_INCLUDE_PATHS = $(PODS_TARGET_SRCROOT)/Classes/CHeaders` |
 | 备用图标在 iOS 上找不到 | 图标必须被拷贝到 **`Runner.app/` 根目录**，不能放在 `Runner.app/Icons/` 子目录里。所以 `tool/patch_xcodeproj.py` 是按**单个文件**加入 Copy Bundle Resources（不是文件夹引用）。注意 `PBXFileReference` 的 `path` 要写 `Icons/<name>`（相对 Runner group），漏了前缀会报 `Build input file cannot be found` |
+| 图标带 alpha / 显示异常 | iOS app icon 不应带 alpha 通道（App Store Connect 会拒绝）。`tool/fetch_app_icons.py` 写出的 PNG 是 color type 2（无 alpha） |
+| 往 `ios/Runner/Icons/` 放了别的 PNG | 该目录被 `patch_xcodeproj.py` glob 所有 `*.png` 并全部打进 app bundle。预览图之类请放 `recon/` |
+| 能装包，但一用某功能就抛 `UnsupportedError: ... only` | ★ **Dart 插件层还有遗留的平台守卫**。给插件加上 iOS 平台后，务必 grep 一遍 `TargetPlatform.android` / `Platform.isAndroid` / `UnsupportedError`。真机上「搜歌播放」报 `BASS playback is available on Android only` 就是这么来的（`packages/bass_player/lib/bass_player.dart`） |
 | 导入音源报「音源初始化超时」 | ★ 音源运行时的三步顺序**必须是 `preload.js` → `music_source_setup(metadata)` → 音源脚本**（`globalThis.lx` 在第二步才创建）。另外 JSCore 设了 `exceptionHandler` 后异常不一定留在 `context.exception` 里，必须在 handler 里自己留一份、并把加载失败直接抛回 Dart，否则任何 JS 错误都只会表现成「超时」。详情见 `recon/IOS-PORT-INTERNALS.md` 第 8 节 #15/#16 |
 | 想在没有 Mac 的情况下验证音源协议 | `node tool/verify_preload_protocol.mjs` —— 用 `node:vm` 隔离跑 preload 的协议与执行顺序，场景 B 专门复现「顺序写反 → `lx is not defined`」。已接入 CI |
 | 真机出问题不知道从哪查 | 先看 app 内**「日志」页**的 `music-source` 标签：JS 异常、脚本字节数、setup 是否完成、是否在等 `inited` 都会写在那里 |

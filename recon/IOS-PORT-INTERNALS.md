@@ -23,12 +23,14 @@ MainActivity.kt 里。
 `music_source_runtime.framework/music_source_preload.js`、15 个备用图标、
 `Info.plist`（`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项）。
 
-**真机已装并跑起来（2026-10-16，iPhone 自签安装）。**
-第一版真机 bug：导入音源报「音源初始化超时」→ 根因见第 8 节 #15/#16
-（音源脚本执行顺序写反 + JSCore 异常被 exceptionHandler 吞掉），
-已在 `v1.0.8-ios.2` 修复。
+**真机已装并跑起来（2026-10-16，iPhone 自签安装）。** 已修的两个真机 bug：
 
-**尚未验证**：音乐播放链路（检索 → 解析 → 播放 → 歌词 → 锁屏控制）是否完整可用。
+| # | 现象 | 根因 | 修复版本 |
+|---|---|---|---|
+| 1 | 导入音源报「音源初始化超时」 | 音源脚本执行顺序写反 + JSCore 异常被吞（见 #15/#16） | `v1.0.8-ios.2` |
+| 2 | 搜歌播放报 `BASS playback is available on Android only` | Dart 插件层遗留平台守卫（见 #20） | `v1.0.8-ios.3` |
+
+**尚未验证**：音乐播放链路是否完整可用（检索 → 解析 → 播放 → 逐字歌词 → 锁屏控制）。
 
 ---
 
@@ -395,6 +397,15 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
     iOS 侧已经把 JS console、JS 异常、以及加载流程的关键节点都通过
     `{type:'log', level, message}` 事件发给了 Dart，会被写进 `AppLogger`。
     排查顺序：先看 `music-source` 标签有没有 JS 异常，再看流程走到哪一步。
+20. ★★★ **别忘了 Dart 插件层里的平台守卫。** `packages/*/lib/*.dart` 里也有
+    `defaultTargetPlatform != TargetPlatform.android` 这类判断，它们不报编译错、也能装包，
+    但一调用就抛 `UnsupportedError`。真机上「搜歌播放」报
+    `Unsupported operation: BASS playback is available on Android only` 就是
+    `packages/bass_player/lib/bass_player.dart` 的 `_initialize()` 里的守卫。
+    **做法：把 `platforms` 加成 iOS 之后，务必回头 grep 一遍
+    `TargetPlatform.android|Platform.isAndroid|UnsupportedError`。**
+21. **`metadata` 里的 `rawScript`（见 #17）与脚本长度校验（#18）都来自 Android 的
+    `createRuntime()`**，改这块前先把那个 Java 方法读一遍，逐行对齐最省事。
 
 ---
 
@@ -405,8 +416,56 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | `node tool/verify_preload_protocol.mjs` | 用 `node:vm` 隔离跑 `preload.js` 的协议 + 执行顺序。场景 A 走正确顺序断言 `init`/`resolve`；场景 B 断言「顺序写反会抛 `lx is not defined` 且不上报 `init`」。已接入 CI |
 | `dart analyze lib packages` | Dart 侧静态检查（期望 1 issue：上游既有的 onReorder 弃用） |
 | `python3 tool/patch_xcodeproj.py` | Xcode 工程引用（幂等） |
+| `bash tool/fetch_app_icons.sh` | 从 `assets/app_icons/classic.png` 生成全部 iOS 图标（纯标准库，约 6 秒） |
 
-没有 Mac 也能验证的就这三样；Swift 侧只能靠 CI 编译。
+没有 Mac 也能验证的就这四样；Swift 侧只能靠 CI 编译。
+
+---
+
+## 8.2 图标体系
+
+```
+assets/app_icons/classic.png        1024x1024，唯一源文件（正方形、不透明）
+        │
+        ├─ tool/fetch_app_icons.py 解析 AppIcon.appiconset/Contents.json
+        │   → ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png   主图标 15 个文件
+        │
+        └─ 同脚本做 HSV 色相迁移
+            → ios/Runner/Icons/icon_<variant>[@2x|@3x].png          备用图标 5 套 × 3 档
+```
+
+**6 套图标的配色**（备用图标由主图标派生；白色音符饱和度≈0，所以清一色保持纯白）：
+
+| variant | 显示名 | hue(0-255) | sat | val |
+|---|---|---|---|---|
+| classic | 经典绿 | — | — | — |
+| midnight | 午夜蓝 | 148 | 0.95 | 0.72 |
+| sky | 晴空蓝 | 136 | 0.90 | 1.06 |
+| lavender | 雾紫 | 186 | 0.85 | 0.98 |
+| mint | 薄荷青 | 108 | 0.70 | 1.10 |
+| peach | 暖桃粉 | 12 | 0.85 | 1.05 |
+
+预览图：`recon/icon-family.png`
+
+**几条硬约束：**
+
+1. 主图标的尺寸需求写在 `AppIcon.appiconset/Contents.json`，脚本按 `size × scale` 算像素，
+   不硬编码 —— 上游改了 Contents.json 也不用改脚本。
+2. **写出的 PNG 不带 alpha 通道**（color type 2）。App Store Connect 会因 alpha 拒绝图标，
+   我们的图全部不透明。
+3. `Runner/Icons/` 里的文件必须**平铺拷到 `Runner.app/` 根目录**
+   （`CFBundleIconFiles` 在 bundle 根找图），所以 `patch_xcodeproj.py` 是按单个文件加入，
+   不能用文件夹引用。
+4. **不要往 `ios/Runner/Icons/` 放非图标 PNG**（比如预览图）——
+   `patch_xcodeproj.py` 会 glob 该目录下所有 `*.png` 并全部打进 app bundle。
+   预览图之类要放 `recon/`。
+5. 脚本只用标准库（`zlib`/`struct`/`colorsys`）：CI 的 macOS runner 上的 python3
+   没有 Pillow，必须能在裸环境跑。
+6. **备用图标增删/改名时四处要同时改**：
+   `tool/fetch_app_icons.py` 的 `ALTERNATES`、
+   `ios/Runner/Info.plist` 的 `CFBundleAlternateIcons`、
+   `ios/Runner/CyShineNativePlugin.swift` 的 `CyShineAppIconChannel.alternateNames`、
+   `lib/core/services/app_icon_service.dart` 的 `AppIconVariant` 枚举。
 
 ---
 
