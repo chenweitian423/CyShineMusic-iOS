@@ -20,6 +20,7 @@
 | `tool/fetch_bass_ios.sh` | 构建前下载 BASS iOS 二进制到 `packages/bass_player/ios/Frameworks/` | 是 |
 | `tool/fetch_app_icons.sh` + `tool/fetch_app_icons.py` | 从 `assets/app_icons/*.png` 生成 `ios/Runner/Icons/` | 是 |
 | `tool/patch_xcodeproj.py` | 把新增的 Swift 文件与 Icons 目录接进 `project.pbxproj`（幂等） | 初次需要 |
+| `tool/verify_preload_protocol.mjs` | 用 `node:vm` 验证 `preload.js` 的协议与**执行顺序**（CI 已接入） | 建议每次改 preload 后跑 |
 | `.github/workflows/ios-build.yml` | macOS runner 上编译并产出未签名 IPA | 可选 |
 
 三个 `packages/*/pubspec.yaml` 与 `lib/app.dart`、`lib/core/services/app_icon_service.dart`、
@@ -115,7 +116,9 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | 音频标签读写 | ⚠️ 读全格式可用；写仅 m4a 可用，FLAC 走纯 Dart；**写 mp3 暂不支持，会明确报错而不是写坏文件** |
 | 桌面小组件 | ⚠️ 数据桥已做，WidgetKit 卡片 UI 未做 |
 
-**还没做的验证：真机运行。** 需要一台 iPhone + AltStore/SideStore 自签安装后实测。
+**还没做的验证：音乐播放链路。** 真机已装上并跑起来（能进首页），
+第一个真机 bug（导入音源报「音源初始化超时」）已在 `v1.0.8-ios.2` 修复。
+接下来要实测：检索 → 音源解析 → 播放 → 逐字歌词 → 锁屏切歌。
 
 ---
 
@@ -130,4 +133,7 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | `Missing argument for parameter #6` 且指向 `BASS_DSD_*` | **`BASS_DSD_StreamCreateURL/File` 比其它附加库多一个 `freq` 参数**（0 = 保持源采样率）。flac/ape/wv/opus 都是 5 个参数，别照抄 |
 | `framework not found CommonCrypto` | iOS SDK 没有 `CommonCrypto.framework`，符号在 libSystem 里，Swift 直接 `import CommonCrypto` 即可。**不要**写进 podspec 的 `s.frameworks` |
 | `import CBass` 报 no such module | BASS 的 xcframework **不含头文件**，必须有 `Classes/CHeaders/{CBassShim.h,module.modulemap}` + podspec 里的 `SWIFT_INCLUDE_PATHS = $(PODS_TARGET_SRCROOT)/Classes/CHeaders` |
-| 备用图标在 iOS 上找不到 | 图标必须被拷贝到 **`Runner.app/` 根目录**，不能放在 `Runner.app/Icons/` 子目录里。所以 `tool/patch_xcodeproj.py` 是按**单个文件**加入 Copy Bundle Resources（不是文件夹引用） |
+| 备用图标在 iOS 上找不到 | 图标必须被拷贝到 **`Runner.app/` 根目录**，不能放在 `Runner.app/Icons/` 子目录里。所以 `tool/patch_xcodeproj.py` 是按**单个文件**加入 Copy Bundle Resources（不是文件夹引用）。注意 `PBXFileReference` 的 `path` 要写 `Icons/<name>`（相对 Runner group），漏了前缀会报 `Build input file cannot be found` |
+| 导入音源报「音源初始化超时」 | ★ 音源运行时的三步顺序**必须是 `preload.js` → `music_source_setup(metadata)` → 音源脚本**（`globalThis.lx` 在第二步才创建）。另外 JSCore 设了 `exceptionHandler` 后异常不一定留在 `context.exception` 里，必须在 handler 里自己留一份、并把加载失败直接抛回 Dart，否则任何 JS 错误都只会表现成「超时」。详情见 `recon/IOS-PORT-INTERNALS.md` 第 8 节 #15/#16 |
+| 想在没有 Mac 的情况下验证音源协议 | `node tool/verify_preload_protocol.mjs` —— 用 `node:vm` 隔离跑 preload 的协议与执行顺序，场景 B 专门复现「顺序写反 → `lx is not defined`」。已接入 CI |
+| 真机出问题不知道从哪查 | 先看 app 内**「日志」页**的 `music-source` 标签：JS 异常、脚本字节数、setup 是否完成、是否在等 `inited` 都会写在那里 |

@@ -23,7 +23,12 @@ MainActivity.kt 里。
 `music_source_runtime.framework/music_source_preload.js`、15 个备用图标、
 `Info.plist`（`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项）。
 
-**尚未验证：真机运行。** 需要 iPhone + AltStore/SideStore 自签后实测。
+**真机已装并跑起来（2026-10-16，iPhone 自签安装）。**
+第一版真机 bug：导入音源报「音源初始化超时」→ 根因见第 8 节 #15/#16
+（音源脚本执行顺序写反 + JSCore 异常被 exceptionHandler 吞掉），
+已在 `v1.0.8-ios.2` 修复。
+
+**尚未验证**：音乐播放链路（检索 → 解析 → 播放 → 歌词 → 锁屏控制）是否完整可用。
 
 ---
 
@@ -368,6 +373,40 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
     所以 `patch_xcodeproj.py` 是按单个文件加入 Copy Bundle Resources（Xcode 会平铺拷贝），
     而不是用「文件夹引用」（文件夹引用会保持子目录结构）。
     脚本里带了迁移逻辑，会把早期版本的文件夹引用行删掉。
+15. ★★★ **音源运行时三步的顺序不能错：`preload.js` → `music_source_setup(metadata)` → 音源脚本。**
+    `globalThis.lx` 是第二步里才创建的。我第一版写成了 `preload → 音源脚本 → setup`，
+    于是脚本一上来执行 `lx.on(...)` 就抛 `lx is not defined`。
+    对照 `MusicSourceRuntimeBridge.createRuntime()` 的 Java 顺序，一秒就能看出来。
+    **回归测试：`node tool/verify_preload_protocol.mjs` 的场景 B 专门断言这个错误现象。**
+16. ★★★ **JSCore 设了 `exceptionHandler` 之后，异常不一定还留在 `context.exception` 里。**
+    我原来只靠 `throwIfPendingException(context)` 判断有没有异常 → 拿到 nil → 判定「没异常」
+    继续往下跑，把异常整个吞掉。后果是 #15 这种错误只表现为一句「音源初始化超时」，
+    完全无法定位。
+    对策（两件都要做）：
+    ① 在 `exceptionHandler` 里自己记一份 `lastScriptException`，
+       并在 load / resolve 还没兑现时**直接把失败抛回 Dart**；
+    ② 超时信息里带上 `lastScriptException`。
+17. **`metadata` 必须包含 `rawScript`（音源脚本原文）**。Android 会传，
+    preload 把它暴露成 `lx.currentScriptInfo.rawScript`，相当多的音源靠它做版本识别 /
+    更新检查。漏了会让这些音源在初始化阶段异常。
+18. **Android 的 `MAX_SCRIPT_LENGTH = 2 MB`、`sendLog` 截断 2000 字符、`requestId` 用 UUID**
+    这些都要跟着对齐；尤其脚本为空时如果不校验，会一路静默走到超时。
+19. **排查真机问题时最快的入口是 app 内的「日志」页**（`lib/features/debug/debug_log_page.dart`）。
+    iOS 侧已经把 JS console、JS 异常、以及加载流程的关键节点都通过
+    `{type:'log', level, message}` 事件发给了 Dart，会被写进 `AppLogger`。
+    排查顺序：先看 `music-source` 标签有没有 JS 异常，再看流程走到哪一步。
+
+---
+
+## 8.1 本地可跑的验证工具
+
+| 工具 | 用途 |
+|---|---|
+| `node tool/verify_preload_protocol.mjs` | 用 `node:vm` 隔离跑 `preload.js` 的协议 + 执行顺序。场景 A 走正确顺序断言 `init`/`resolve`；场景 B 断言「顺序写反会抛 `lx is not defined` 且不上报 `init`」。已接入 CI |
+| `dart analyze lib packages` | Dart 侧静态检查（期望 1 issue：上游既有的 onReorder 弃用） |
+| `python3 tool/patch_xcodeproj.py` | Xcode 工程引用（幂等） |
+
+没有 Mac 也能验证的就这三样；Swift 侧只能靠 CI 编译。
 
 ---
 
