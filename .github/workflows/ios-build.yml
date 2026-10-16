@@ -69,6 +69,12 @@ jobs:
           fi
           echo "preload.js md5: $(md5 -q "$a")"
 
+      # preload.js 的协议与「preload -> music_source_setup -> 音源脚本」这个顺序
+      # 是 iOS/Android 两端共用的硬约束。顺序写反过一次（表现为「初始化超时」），
+      # 这里跑成回归测试，避免再犯。
+      - name: Verify preload protocol & call order
+        run: node tool/verify_preload_protocol.mjs
+
       - name: Prepare iOS alternate icons
         run: bash tool/fetch_app_icons.sh
 

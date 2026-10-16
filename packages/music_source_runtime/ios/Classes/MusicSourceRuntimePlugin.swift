@@ -72,9 +72,21 @@ final class SourceScriptSession: NSObject {
   private var metadata: [String: String] = [:]
   private var timers: [Int: DispatchWorkItem] = [:]
 
+  /// 最近一次 JS 异常。JSCore 设了 exceptionHandler 之后，异常未必会留在
+  /// context.exception 里，所以必须自己留一份，否则会静默地把异常吞掉、
+  /// 最后只表现为「初始化超时」。
+  private var lastScriptException: String?
+
   private var loadCompletion: ((Result<[String: Any?], Error>) -> Void)?
   private var resolveCompletion: ((Result<[String: Any?], Error>) -> Void)?
   private var disposed = false
+
+  /// 与 Android 的 MAX_SCRIPT_LENGTH 对齐。
+  private static let maxScriptBytes = 2 * 1024 * 1024
+
+  /// 内部加载超时。刻意比 Dart 侧的 12 秒短：这样超时原因由我们给出（带诊断信息），
+  /// 而不是让 Dart 抛一句笼统的「音源初始化超时」。
+  private static let loadTimeoutSeconds: Double = 10
 
   init(channel: FlutterMethodChannel) {
     self.channel = channel
@@ -91,10 +103,31 @@ final class SourceScriptSession: NSObject {
         return
       }
       let script = args["script"] as? String ?? ""
+
+      // 与 Android 对齐：脚本为空或超限时立刻报错。
+      // 不加这个校验的话，空脚本会让 JS 正常跑完但永远不上报 inited，
+      // 用户只看到「音源初始化超时」，完全无从下手。
+      if script.isEmpty {
+        result(FlutterError(code: "INVALID_SCRIPT",
+                            message: "音源脚本为空",
+                            details: "请重新导入音源文件"))
+        return
+      }
+      if script.utf8.count > Self.maxScriptBytes {
+        result(FlutterError(code: "INVALID_SCRIPT",
+                            message: "音源脚本超过 2 MB",
+                            details: "\(script.utf8.count) 字节"))
+        return
+      }
+
       var info: [String: String] = [:]
       for key in ["id", "name", "description", "author", "homepage", "version", "sourceKey"] {
         info[key] = (args[key] as? String) ?? ""
       }
+      // Android 在 metadata 里额外放了 rawScript（脚本原文）。
+      // preload.js 把它暴露成 lx.currentScriptInfo.rawScript，相当多的音源
+      // 靠它做版本识别 / 更新检查；iOS 侧漏了会导致这些音源在初始化阶段异常。
+      info["rawScript"] = script
       metadata = info
       startLoad(script: script, metadata: info, result: result)
 
@@ -143,25 +176,44 @@ final class SourceScriptSession: NSObject {
       do {
         let context = try self.makeContext()
         self.context = context
+        self.lastScriptException = nil
 
-        // 先跑 preload，再跑音源脚本，最后把 metadata 交给 preload 完成装配。
+        // ⚠️ 执行顺序必须与 Android 的 createRuntime() 完全一致：
+        //   1. evaluate(preload)                    —— 只定义 music_source_setup
+        //   2. music_source_setup(metadataJson)     —— 在这里才创建 globalThis.lx
+        //   3. evaluate(音源脚本)                    —— 脚本里 lx.on / lx.send 才可用
+        // 曾经把 2 和 3 写反，结果脚本跑的时候 lx 还是 undefined，
+        // 一上来就 TypeError；叠加 exceptionHandler 把异常吞掉，
+        // 最终只表现为「音源初始化超时」，极难定位。
         let preload = Self.preloadScript()
         if preload.isEmpty {
           throw SourceRuntimeError("找不到内置脚本 music_source_preload.js")
         }
-        try self.evaluateScript(preload, in: context)
-        try self.evaluateScript(script, in: context)
+        self.emitLog(level: "info",
+                     message: "载入音源 id=\(metadata["id"] ?? "") "
+                       + "脚本 \(script.utf8.count) 字节 "
+                       + "preload \(preload.utf8.count) 字节")
 
-        let metadataJson = Self.encodeJSON(metadata)
+        try self.evaluateScript(preload, in: context)
+
+        let metadataJson = self.encodeJSON(metadata)
         guard let setup = context.objectForKeyedSubscript("music_source_setup"),
               !setup.isUndefined else {
           throw SourceRuntimeError("音源运行时未提供 music_source_setup")
         }
         setup.call(withArguments: [metadataJson])
-        try self.throwIfPendingException(context, fallback: "音源初始化失败")
+        try self.throwIfPendingException(context, fallback: "音源运行时装配失败")
+        self.drainMicrotasks(context)
+        try self.throwIfPendingException(context, fallback: "音源运行时装配失败")
+        self.emitLog(level: "info", message: "music_source_setup 完成，开始执行音源脚本")
+
+        try self.evaluateScript(script, in: context)
+        self.drainMicrotasks(context)
+        try self.throwIfPendingException(context, fallback: "音源脚本执行失败")
 
         // 正常情况下脚本会调 lx.send('inited', ...) -> native_call('init', ...)
-        // 来兑现这个 Future；同步就完成的（或根本没发 inited 的）由超时兜底。
+        // 来兑现这个 Future；没上报的由超时兜底。
+        self.emitLog(level: "info", message: "音源脚本已执行，等待脚本上报 inited")
         self.scheduleLoadTimeout()
       } catch {
         let completion = self.loadCompletion
@@ -172,12 +224,15 @@ final class SourceScriptSession: NSObject {
   }
 
   private func scheduleLoadTimeout() {
-    timerQueue.asyncAfter(deadline: .now() + 12) { [weak self] in
+    timerQueue.asyncAfter(deadline: .now() + Self.loadTimeoutSeconds) { [weak self] in
       guard let self else { return }
       self.jsQueue.async {
         guard let completion = self.loadCompletion else { return }
         self.loadCompletion = nil
-        completion(.failure(SourceRuntimeError("音源初始化超时")))
+        let seconds = Int(Self.loadTimeoutSeconds)
+        let hint = self.lastScriptException.map { "，脚本异常：\($0)" } ?? ""
+        completion(.failure(SourceRuntimeError(
+          "音源脚本 \(seconds) 秒内没有上报 inited\(hint)")))
       }
     }
   }
@@ -213,8 +268,8 @@ final class SourceScriptSession: NSObject {
         }
       }
 
-      // requestId 由原生侧生成，preload.js 会原样带回来。
-      let requestId = String(Int(Date().timeIntervalSince1970 * 1000) % 1_000_000_000)
+      // requestId 由原生侧生成（与 Android 一样用 UUID），preload.js 会原样带回来。
+      let requestId = UUID().uuidString
       var payload: [String: Any] = [
         "requestId": requestId,
         "source": args["source"] as? String ?? "",
@@ -229,7 +284,7 @@ final class SourceScriptSession: NSObject {
         completion?(.failure(SourceRuntimeError("音源运行时未就绪")))
         return
       }
-      handle.call(withArguments: ["resolve", Self.encodeJSON(payload)])
+      handle.call(withArguments: ["resolve", self.encodeJSON(payload)])
       // 正常情况下 preload.js 的 runResolve 会自己 try/catch 并回 resolveResult；
       // 这里只是兜底：真出现同步异常就直接判这次解析失败，避免 Dart 侧干等到超时。
       do {
@@ -263,7 +318,7 @@ final class SourceScriptSession: NSObject {
       guard let context = self.context else { return }
       guard let handle = context.objectForKeyedSubscript("__music_source_handle__"),
             !handle.isUndefined else { return }
-      handle.call(withArguments: ["httpResponse", Self.encodeJSON(args)])
+      handle.call(withArguments: ["httpResponse", self.encodeJSON(args)])
       // 这里在非 throwing 的队列闭包里，用日志版兜底即可：
       // 脚本自己的 Promise 链会把结果走 resolveResult 回来。
       self.reportPendingException(context, fallback: "音源响应处理失败")
@@ -301,9 +356,28 @@ final class SourceScriptSession: NSObject {
     guard let context = JSContext() else {
       throw SourceRuntimeError("无法创建 JS 运行时")
     }
+    // JS 异常必须在 handler 里自己留一份。
+    // 原因：JSCore 在设置了 exceptionHandler 之后，异常不一定还留在
+    // context.exception 里（实测会拿到 nil），于是 throwIfPendingException
+    // 判定「没异常」继续往下走 —— 结果就是异常被静默吞掉，
+    // 用户只看到一句「音源初始化超时」，无从定位。
+    // 这里做两件事：① 记进 lastScriptException 供超时信息引用；
+    // ② 如果此刻 load / resolve 还没兑现，直接把失败抛回 Dart。
     context.exceptionHandler = { [weak self] _, exception in
+      guard let self else { return }
       let message = exception?.toString() ?? "unknown"
-      self?.emitLog(level: "error", message: message)
+      self.lastScriptException = message
+      self.emitLog(level: "error", message: "JS 异常：\(message)")
+
+      if let completion = self.loadCompletion {
+        self.loadCompletion = nil
+        completion(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
+        return
+      }
+      if let completion = self.resolveCompletion {
+        self.resolveCompletion = nil
+        completion(.failure(SourceRuntimeError("音源脚本抛异常：\(message)")))
+      }
     }
     registerNativeFunctions(on: context)
     registerConsole(on: context)
@@ -509,14 +583,23 @@ final class SourceScriptSession: NSObject {
 
   private func evaluateScript(_ source: String, in context: JSContext) throws {
     context.evaluateScript(source)
+    // 先冲刷微任务：脚本里 Promise.then / async 的同步部分会在这里跑到，
+    // 期间抛的异常才能被下面的检查抓到。
+    drainMicrotasks(context)
     try throwIfPendingException(context, fallback: "脚本执行失败")
   }
 
   private func throwIfPendingException(_ context: JSContext, fallback: String) throws {
-    guard let exception = context.exception else { return }
-    let message = exception.toString() ?? fallback
-    context.exception = nil
-    throw SourceRuntimeError(message)
+    if let exception = context.exception {
+      let message = exception.toString() ?? fallback
+      context.exception = nil
+      throw SourceRuntimeError(message)
+    }
+    // 兜底：exceptionHandler 可能已经把异常取走了，那就用记下来的那一份。
+    if let recorded = lastScriptException {
+      lastScriptException = nil
+      throw SourceRuntimeError("\(fallback)：\(recorded)")
+    }
   }
 
   /// JSCore 会在 API 入口结束后冲刷微任务队列；这里显式跑一次 Promise 链的
@@ -532,13 +615,20 @@ final class SourceScriptSession: NSObject {
   }
 
   private func emitLog(level: String, message: String) {
-    emitEvent(["type": "log", "level": level, "message": message])
+    // 与 Android 的 sendLog 一致：截断到 2000 字符，避免异常堆栈把通道刷爆。
+    let trimmed = message.count > 2000 ? String(message.prefix(2000)) : message
+    emitEvent(["type": "log", "level": level, "message": trimmed])
   }
 
-  private static func encodeJSON(_ value: Any) -> String {
+  /// 序列化给 JS 的 JSON。
+  /// 以前失败时静默返回 "{}"，会让 JS 收到空对象后一路走到超时；
+  /// 现在改成把失败写进日志事件，app 内的日志页能看到。
+  private func encodeJSON(_ value: Any) -> String {
     guard JSONSerialization.isValidJSONObject(value),
           let data = try? JSONSerialization.data(withJSONObject: value, options: []),
           let text = String(data: data, encoding: .utf8) else {
+      let keys = (value as? [String: Any])?.keys.sorted().joined(separator: ",") ?? "\(type(of: value))"
+      emitLog(level: "error", message: "JSON 序列化失败，已回退为空对象。字段：\(keys)")
       return "{}"
     }
     return text
