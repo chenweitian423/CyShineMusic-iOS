@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh_CN</string>
+	<key>CFBundleDisplayName</key>
+	<string>栖弦</string>
+	<!-- Widget Extension 的可执行文件名，必须与 .appex 里的二进制同名 -->
+	<key>CFBundleExecutable</key>
+	<string>CyShineMusicWidget</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.cyshine.music.widget</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>CyShineMusicWidget</string>
+	<!-- App Extension 的包类型固定是 XPC! -->
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.8</string>
+	<key>CFBundleVersion</key>
+	<string>9</string>
+
+	<key>NSExtension</key>
+	<dict>
+		<!-- WidgetKit 扩展，同时承载「桌面小组件」与「实时活动」 -->
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+
+	<!-- 与主 App 一致的深链 scheme 白名单（Link 打开 App 用） -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.cyshine.music</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>cyshinemusic</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

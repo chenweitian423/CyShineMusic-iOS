@@ -81,6 +81,12 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      # 幂等：把新增的 Swift 文件接进 Runner 的 Compile Sources，并把部署目标
+      # 对齐到 16.1（ActivityKit 的最低要求）。正常情况仓库里的 pbxproj 已经
+      # 是注入好的，这一步是防止漏提交导致 CI 与本地不一致。
+      - name: Ensure Xcode project wiring
+        run: python3 tool/patch_xcodeproj.py
+
       - name: Analyze
         run: flutter analyze --no-fatal-infos
 
@@ -121,6 +127,26 @@ jobs:
       - name: Build iOS (no codesign)
         run: |
           flutter build ios --release --no-codesign
+
+      # Widget Extension（灵动岛实时活动 + 桌面小组件）。
+      # 独立编译再塞进 PlugIns/，等价于 Xcode 的 Embed App Extensions 阶段，
+      # 但不需要往 Flutter 生成的 Runner.xcodeproj 里加 target。
+      - name: Build & embed widget extension
+        run: bash tool/build_widget_extension.sh build/ios/iphoneos/Runner.app
+
+      - name: Verify embedded extension
+        run: |
+          set -e
+          APP=build/ios/iphoneos/Runner.app
+          test -d "$APP/PlugIns/CyShineMusicWidget.appex" \
+            || { echo "::error::扩展没有被嵌入 $APP/PlugIns/"; exit 1; }
+          test -f "$APP/PlugIns/CyShineMusicWidget.appex/CyShineMusicWidget" \
+            || { echo "::error::扩展主二进制缺失"; exit 1; }
+          grep -q "com.apple.widgetkit-extension" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
+            || { echo "::error::扩展 Info.plist 缺少 widgetkit NSExtensionPointIdentifier"; exit 1; }
+          echo "扩展已就位："
+          ls -la "$APP/PlugIns/CyShineMusicWidget.appex"
 
       - name: Package unsigned IPA
         run: |

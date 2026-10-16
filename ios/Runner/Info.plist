@@ -99,6 +99,27 @@
 		<string>fetch</string>
 	</array>
 
+	<!-- 实时活动（灵动岛 + 锁屏卡片）。渲染在 Widget Extension 里，
+	     见 ios/CyShineMusicWidget/ -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+	<key>NSSupportsLiveActivitiesFrequentUpdates</key>
+	<true/>
+
+	<!-- 深链：灵动岛 / 锁屏卡片 / 桌面小组件点一下回到 App，并带上控制动作。
+	     与 ios/CyShineMusicWidget/Info.plist 的 scheme 保持一致。 -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.cyshine.music</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>cyshinemusic</string>
+			</array>
+		</dict>
+	</array>
+
 	<!-- 下载的歌要能被「文件」App 看到，也需要能接收其他 App 分享来的音频。 -->
 	<key>UIFileSharingEnabled</key>
 	<true/>

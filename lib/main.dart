@@ -11,6 +11,7 @@ import 'core/services/app_logger.dart';
 import 'core/debug/debug_paint_guard.dart';
 import 'core/storage/settings_store.dart';
 import 'features/player/player_audio_handler.dart';
+import 'features/player/live_activity_service.dart';
 import 'features/player/music_home_widget_service.dart';
 
 Future<void> main() async {
@@ -46,6 +47,9 @@ Future<void> main() async {
   // The media-service engine can start without an Activity or a rendered
   // frame. Install widget controls before runApp, using the same providers.
   await container.read(musicHomeWidgetProvider).initialize();
+  // iOS 的灵动岛 / 锁屏实时活动：与桌面小组件同理，尽早建立通道监听，
+  // 免得从锁屏直接点播放时错过第一次状态变化。
+  await container.read(liveActivityProvider).initialize();
   runApp(
     UncontrolledProviderScope(
       container: container,
