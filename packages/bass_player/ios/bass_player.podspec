@@ -14,7 +14,7 @@ com.cyshine.music/bass_player/events），因此 lib/ 层不需要任何改动�
   s.source_files     = 'Classes/*.{swift,h,c}'
   s.preserve_paths   = 'Classes/CHeaders/**', 'Frameworks/**'
   s.dependency 'Flutter'
-  s.platform         = :ios, '13.0'
+  s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
 
   # BASS 二进制不入库：由 tool/fetch_bass_ios.sh 在 pod install 之前下载填入。

@@ -17,7 +17,7 @@ WidgetCenter 刷新，卡片 UI 在 ios/CyShineMusicWidget/ 里读取同一份�
   s.source_files     = 'Classes/**/*.swift'
   s.frameworks       = 'WidgetKit'
   s.dependency 'Flutter'
-  s.platform         = :ios, '14.0'
+  s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES'

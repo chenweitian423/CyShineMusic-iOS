@@ -125,6 +125,9 @@ final class SourceScriptSession: NSObject {
                          result: @escaping FlutterResult) {
     jsQueue.async {
       self.teardown()
+      // teardown() 会把 disposed 置为 true；重新 load 时必须复位，
+      // 否则后续 resolve 会被误判成「运行时已释放」。
+      self.disposed = false
       self.loadCompletion = { outcome in
         DispatchQueue.main.async {
           switch outcome {
@@ -142,7 +145,11 @@ final class SourceScriptSession: NSObject {
         self.context = context
 
         // 先跑 preload，再跑音源脚本，最后把 metadata 交给 preload 完成装配。
-        try self.evaluateScript(Self.preloadScript(), in: context)
+        let preload = Self.preloadScript()
+        if preload.isEmpty {
+          throw SourceRuntimeError("找不到内置脚本 music_source_preload.js")
+        }
+        try self.evaluateScript(preload, in: context)
         try self.evaluateScript(script, in: context)
 
         let metadataJson = Self.encodeJSON(metadata)
@@ -151,15 +158,11 @@ final class SourceScriptSession: NSObject {
           throw SourceRuntimeError("音源运行时未提供 music_source_setup")
         }
         setup.call(withArguments: [metadataJson])
-        self.throwIfPendingException(context, fallback: "音源初始化失败")
+        try self.throwIfPendingException(context, fallback: "音源初始化失败")
 
-        // 之后由脚本调用 lx.send('inited', ...) -> native_call('init', ...) 完成。
-        if self.loadCompletion == nil {
-          // 脚本同步就完成了（或者根本没发 inited），给一个超时出口。
-          self.scheduleLoadTimeout()
-        } else {
-          self.scheduleLoadTimeout()
-        }
+        // 正常情况下脚本会调 lx.send('inited', ...) -> native_call('init', ...)
+        // 来兑现这个 Future；同步就完成的（或根本没发 inited 的）由超时兜底。
+        self.scheduleLoadTimeout()
       } catch {
         let completion = self.loadCompletion
         self.loadCompletion = nil
@@ -216,8 +219,8 @@ final class SourceScriptSession: NSObject {
         "requestId": requestId,
         "source": args["source"] as? String ?? "",
         "quality": args["quality"] as? String ?? "",
+        "musicInfo": args["musicInfo"] as? [String: Any] ?? [:],
       ]
-      payload["musicInfo"] = args["musicInfo"] ?? [:]
 
       guard let handle = context.objectForKeyedSubscript("__music_source_handle__"),
             !handle.isUndefined else {
@@ -227,7 +230,16 @@ final class SourceScriptSession: NSObject {
         return
       }
       handle.call(withArguments: ["resolve", Self.encodeJSON(payload)])
-      self.throwIfPendingException(context, fallback: "音源解析失败")
+      // 正常情况下 preload.js 的 runResolve 会自己 try/catch 并回 resolveResult；
+      // 这里只是兜底：真出现同步异常就直接判这次解析失败，避免 Dart 侧干等到超时。
+      do {
+        try self.throwIfPendingException(context, fallback: "音源解析失败")
+      } catch {
+        let completion = self.resolveCompletion
+        self.resolveCompletion = nil
+        completion?(.failure(error))
+        return
+      }
 
       self.scheduleResolveTimeout()
     }
@@ -252,7 +264,9 @@ final class SourceScriptSession: NSObject {
       guard let handle = context.objectForKeyedSubscript("__music_source_handle__"),
             !handle.isUndefined else { return }
       handle.call(withArguments: ["httpResponse", Self.encodeJSON(args)])
-      self.throwIfPendingException(context, fallback: "音源响应处理失败")
+      // 这里在非 throwing 的队列闭包里，用日志版兜底即可：
+      // 脚本自己的 Promise 链会把结果走 resolveResult 回来。
+      self.reportPendingException(context, fallback: "音源响应处理失败")
       // 脚本收到响应后可能同步走完 resolve 链，这里补一次微任务冲刷。
       self.drainMicrotasks(context)
     }
@@ -426,9 +440,12 @@ final class SourceScriptSession: NSObject {
     loadCompletion = nil
 
     if payload["status"] as? Bool == true {
-      let info = payload["info"] as? [String: Any] ?? [:]
       // Dart 侧只认 {sources: {...}}，preload 已经把能力归一化好了。
-      completion?(.success(info))
+      // 注意 [String: Any] 不能隐式转成 [String: Any?]，要手工搬一次。
+      let info = payload["info"] as? [String: Any] ?? [:]
+      var mapped: [String: Any?] = [:]
+      for (key, value) in info { mapped[key] = value }
+      completion?(.success(mapped))
     } else {
       completion?(.failure(SourceRuntimeError(payload["error"] as? String ?? "音源初始化失败")))
     }
@@ -475,8 +492,17 @@ final class SourceScriptSession: NSObject {
           !handle.isUndefined else { return }
     // preload.js 里是 Number(dataJson)，Android 传的也是字符串。
     handle.call(withArguments: ["timeout", String(id)])
-    throwIfPendingException(context, fallback: "定时回调失败")
+    reportPendingException(context, fallback: "定时回调失败")
     drainMicrotasks(context)
+  }
+
+  /// 非 throwing 上下文（队列闭包、DSP/定时器回调）里用：
+  /// 把 JS 异常转成一条 error 日志，不中断流程。
+  private func reportPendingException(_ context: JSContext, fallback: String) {
+    guard let exception = context.exception else { return }
+    let message = exception.toString() ?? fallback
+    context.exception = nil
+    emitLog(level: "error", message: message)
   }
 
   // MARK: 工具
@@ -524,11 +550,20 @@ final class SourceScriptSession: NSObject {
   }
 
   /// preload.js 与 Android 端共用同一份文件，由 CI 校验两处 md5 一致。
+  ///
+  /// 用 `s.resources` 引入时文件会被拷进 App 主 bundle；但若将来改成
+  /// `s.resource_bundles`，就会落在独立 bundle 里。这里两种位置都找一遍，
+  /// 找不到就返回空串，由调用方给出可读的中文报错。
   private static func preloadScript() -> String {
-    let bundle = Bundle(for: SourceScriptSession.self)
-    if let url = bundle.url(forResource: "music_source_preload", withExtension: "js"),
-       let text = try? String(contentsOf: url, encoding: .utf8) {
-      return text
+    let candidates: [Bundle] = [
+      Bundle(for: SourceScriptSession.self),
+      Bundle.main,
+    ]
+    for bundle in candidates {
+      if let url = bundle.url(forResource: "music_source_preload", withExtension: "js"),
+         let text = try? String(contentsOf: url, encoding: .utf8), !text.isEmpty {
+        return text
+      }
     }
     return ""
   }

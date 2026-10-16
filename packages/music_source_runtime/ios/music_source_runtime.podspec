@@ -16,9 +16,11 @@ JS 引擎使用系统自带的 JavaScriptCore，无外部依赖。
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*.swift'
   s.resources        = 'Resources/**'
-  s.frameworks       = 'JavaScriptCore', 'Security', 'CommonCrypto'
+  # CommonCrypto 不是独立 framework（符号在 libSystem 里，Swift 直接 `import CommonCrypto`
+  # 即可），写进 frameworks 会导致「framework not found CommonCrypto」链接失败。
+  s.frameworks       = 'JavaScriptCore', 'Security'
   s.dependency 'Flutter'
-  s.platform         = :ios, '13.0'
+  s.platform         = :ios, '15.0'
   s.swift_version    = '5.0'
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES'

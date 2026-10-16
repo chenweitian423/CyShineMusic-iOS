@@ -602,58 +602,58 @@ final class CyShineNativeTaggerChannel {
       return
     }
 
+    // 用 AVAsset 的旧式异步加载 API（iOS 4+ 就有），不用 iOS 15 才引入的
+    // `load(_:)` async 版本，这样不必到处加 #available 分支。
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
-    Task {
-      do {
-        let metadata = try await asset.load(.commonMetadata)
-        var payload: [String: Any?] = [
-          "title": NSNull(), "artist": NSNull(), "album": NSNull(),
-          "lyrics": NSNull(), "artwork": NSNull(),
+    asset.loadValuesAsynchronously(forKeys: ["commonMetadata"]) { [weak self] in
+      guard let self else { return }
+      var loadError: NSError?
+      let status = asset.statusOfValue(forKey: "commonMetadata", error: &loadError)
+      guard status == .loaded else {
+        DispatchQueue.main.async {
+          result(FlutterError(code: "NATIVE_TAGGER_READ_FAILED",
+                              message: loadError?.localizedDescription ?? "无法读取音频元数据",
+                              details: "\(String(describing: loadError))"))
+        }
+        return
+      }
+
+      let metadata = asset.commonMetadata
+      var payload: [String: Any] = [:]
+      for item in metadata {
+        guard let key = item.commonKey?.rawValue else { continue }
+        switch key {
+        case AVMetadataKey.commonKeyTitle.rawValue:
+          if let value = item.stringValue { payload["title"] = value }
+        case AVMetadataKey.commonKeyArtist.rawValue:
+          if let value = item.stringValue { payload["artist"] = value }
+        case AVMetadataKey.commonKeyAlbumName.rawValue:
+          if let value = item.stringValue { payload["album"] = value }
+        case AVMetadataKey.commonKeyArtwork.rawValue:
+          if includeArtwork { payload["artwork"] = item.dataValue }
+        default:
+          break
+        }
+      }
+
+      if includeLyrics {
+        // 歌词没有 commonKey，只能按 ID3 / iTunes 的标识符去找。
+        let identifiers: [AVMetadataIdentifier] = [
+          AVMetadataIdentifier(rawValue: "id3/ULT"),
+          AVMetadataIdentifier.iTunesMetadataLyrics,
         ]
-        for item in metadata {
-          guard let key = item.commonKey?.rawValue else { continue }
-          switch key {
-          case AVMetadataKey.commonKeyTitle.rawValue:
-            payload["title"] = try? await item.load(.stringValue)
-          case AVMetadataKey.commonKeyArtist.rawValue:
-            payload["artist"] = try? await item.load(.stringValue)
-          case AVMetadataKey.commonKeyAlbumName.rawValue:
-            payload["album"] = try? await item.load(.stringValue)
-          case AVMetadataKey.commonKeyArtwork.rawValue:
-            if includeArtwork {
-              payload["artwork"] = try? await item.load(.dataValue)
-            }
-          default:
+        for identifier in identifiers {
+          let items = AVMetadataItem.metadataItems(from: metadata,
+                                                   filteredByIdentifier: identifier)
+          if let item = items.first, let text = item.stringValue, !text.isEmpty {
+            payload["lyrics"] = text
             break
           }
         }
-
-        if includeLyrics {
-          // 歌词没有 commonKey，只能按 ID3/iTunes 的标识符去捞。
-          let identifiers: [AVMetadataIdentifier] = [
-            .id3MetadataUnsynchronizedLyric,
-            .iTunesMetadataLyrics,
-          ]
-          for identifier in identifiers {
-            let items = AVMetadataItem.metadataItems(from: metadata,
-                                                     filteredByIdentifier: identifier)
-            if let item = items.first,
-               let text = try? await item.load(.stringValue), !text.isEmpty {
-              payload["lyrics"] = text
-              break
-            }
-          }
-        }
-
-        let value = payload.compactMapValues { $0 as Any }
-        DispatchQueue.main.async { result(value) }
-      } catch {
-        DispatchQueue.main.async {
-          result(FlutterError(code: "NATIVE_TAGGER_READ_FAILED",
-                              message: error.localizedDescription,
-                              details: "\(error)"))
-        }
       }
+
+      // MethodChannel 的 Result 是线程安全的，但按约定回主线程更稳妥。
+      DispatchQueue.main.async { result(payload) }
     }
   }
 

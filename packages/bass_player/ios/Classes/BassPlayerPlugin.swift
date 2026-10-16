@@ -230,10 +230,12 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     initialized = true
 
     // 这些附加库是以动态 framework 形式链接进来的，链接成功即代表可用。
-    pluginVersions["flac"] = BassPlayerPlugin.versionString(BASS_GetVersion())
-    pluginVersions["ape"] = BassPlayerPlugin.versionString(BASS_GetVersion())
-    pluginVersions["office"] = "n/a"
-    pluginVersions.removeValue(forKey: "office")
+    // 附加库本身没有独立的 GetVersion 入口（那是 BASS_FX 才有），这里上报核心版本。
+    pluginVersions["flac"] = bassVersion
+    pluginVersions["ape"] = bassVersion
+    pluginVersions["wv"] = bassVersion
+    pluginVersions["opus"] = bassVersion
+    pluginVersions["dsd"] = bassVersion
     // ALAC / AAC 在 Apple 平台由 BASS 核心走系统解码器，没有独立版本号可读。
     pluginVersions["alac"] = "core (CoreAudio)"
 
@@ -279,9 +281,10 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     emitSnapshot()
 
     let flags = UInt32(BASS_SAMPLE_FLOAT)
-    let scheme = URL(string: source)?.scheme?.lowercased()
+    // 用 `?? ""` 归一成非可选再 switch：避免依赖 Swift 对 Optional 的模式匹配推断。
+    let scheme = URL(string: source)?.scheme?.lowercased() ?? ""
     let format = BassPlayerPlugin.normalizedFormat(formatHint, source: source)
-    let isRemote = ["http", "https", "ftp"].contains(scheme ?? "")
+    let isRemote = ["http", "https", "ftp"].contains(scheme)
 
     var handle: HSTREAM = 0
     do {
@@ -293,11 +296,12 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
       case "file":
         let path = URL(string: source)?.path ?? source
         handle = createFileStream(format: format, path: path, flags: flags)
-      case nil, "":
+      case "":
+        // 没有 scheme 说明传进来的就是本地文件路径。
         handle = createFileStream(format: format, path: source, flags: flags)
       default:
         throw BassError(code: Int32(BASS_ERROR_FILEOPEN), operation: "load",
-                        message: "不支持的 URI scheme: \(scheme ?? "")")
+                        message: "不支持的 URI scheme: \(scheme)")
       }
     } catch {
       processingState = .error
