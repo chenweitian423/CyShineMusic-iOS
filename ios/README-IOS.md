@@ -137,7 +137,8 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | 备用图标在 iOS 上找不到 | 图标必须被拷贝到 **`Runner.app/` 根目录**，不能放在 `Runner.app/Icons/` 子目录里。所以 `tool/patch_xcodeproj.py` 是按**单个文件**加入 Copy Bundle Resources（不是文件夹引用）。注意 `PBXFileReference` 的 `path` 要写 `Icons/<name>`（相对 Runner group），漏了前缀会报 `Build input file cannot be found` |
 | 图标带 alpha / 显示异常 | iOS app icon 不应带 alpha 通道（App Store Connect 会拒绝）。`tool/fetch_app_icons.py` 写出的 PNG 是 color type 2（无 alpha） |
 | 往 `ios/Runner/Icons/` 放了别的 PNG | 该目录被 `patch_xcodeproj.py` glob 所有 `*.png` 并全部打进 app bundle。预览图之类请放 `recon/` |
-| 能装包，但一用某功能就抛 `UnsupportedError: ... only` | ★ **Dart 插件层还有遗留的平台守卫**。给插件加上 iOS 平台后，务必 grep 一遍 `TargetPlatform.android` / `Platform.isAndroid` / `UnsupportedError`。真机上「搜歌播放」报 `BASS playback is available on Android only` 就是这么来的（`packages/bass_player/lib/bass_player.dart`） |
+| 能装包，但一用某功能就抛 `UnsupportedError: ... only` | ★ **Dart 插件层还有遗留的平台守卫**。给插件加上 iOS 平台后，务必 grep 一遍 `TargetPlatform.android` / `Platform.isAndroid` / `UnsupportedError`。真机上「搜歌播放」报 `BASS playback is available on Android only` 就是这么来的 |
+| 点状态栏不回顶 / 其它 iOS 手感缺失 | ★ iOS 独有的框架分支行为，Android 上测不出来。点状态栏回顶被外壳 Scaffold 挡住（`ShellRoute` + `indexedStack` 结构下必然发生），修复见 `lib/core/ui/scroll_to_top.dart` 与 `recon/IOS-PORT-INTERNALS.md` 第 8 节 #22 |
 | 导入音源报「音源初始化超时」 | ★ 音源运行时的三步顺序**必须是 `preload.js` → `music_source_setup(metadata)` → 音源脚本**（`globalThis.lx` 在第二步才创建）。另外 JSCore 设了 `exceptionHandler` 后异常不一定留在 `context.exception` 里，必须在 handler 里自己留一份、并把加载失败直接抛回 Dart，否则任何 JS 错误都只会表现成「超时」。详情见 `recon/IOS-PORT-INTERNALS.md` 第 8 节 #15/#16 |
 | 想在没有 Mac 的情况下验证音源协议 | `node tool/verify_preload_protocol.mjs` —— 用 `node:vm` 隔离跑 preload 的协议与执行顺序，场景 B 专门复现「顺序写反 → `lx is not defined`」。已接入 CI |
 | 真机出问题不知道从哪查 | 先看 app 内**「日志」页**的 `music-source` 标签：JS 异常、脚本字节数、setup 是否完成、是否在等 `inited` 都会写在那里 |

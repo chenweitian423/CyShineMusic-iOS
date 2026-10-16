@@ -29,6 +29,7 @@ MainActivity.kt 里。
 |---|---|---|---|
 | 1 | 导入音源报「音源初始化超时」 | 音源脚本执行顺序写反 + JSCore 异常被吞（见 #15/#16） | `v1.0.8-ios.2` |
 | 2 | 搜歌播放报 `BASS playback is available on Android only` | Dart 插件层遗留平台守卫（见 #20） | `v1.0.8-ios.3` |
+| 3 | 点状态栏不回顶 | 框架实现被外壳 Scaffold 挡住（见 #22） | `v1.0.8-ios.4` |
 
 **尚未验证**：音乐播放链路是否完整可用（检索 → 解析 → 播放 → 逐字歌词 → 锁屏控制）。
 
@@ -406,6 +407,31 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
     `TargetPlatform.android|Platform.isAndroid|UnsupportedError`。**
 21. **`metadata` 里的 `rawScript`（见 #17）与脚本长度校验（#18）都来自 Android 的
     `createRuntime()`**，改这块前先把那个 Java 方法读一遍，逐行对齐最省事。
+22. ★★★ **iOS「点状态栏回到顶部」在 `ShellRoute` + `StatefulShellRoute.indexedStack`
+    结构下会被外壳 Scaffold 挡住。** 这是 iOS 独有的，纯 Android 开发发现不了。
+    Flutter 的链路是：iOS 引擎发 `handleScrollToTop` → `WidgetsBinding` 派发给
+    `WidgetsBindingObserver.handleStatusBarTap()` →
+    `_ScaffoldState.handleStatusBarTap()` 滚 `PrimaryScrollController`。
+    但它有两道门槛，本项目都过不去：
+    ① **要求 Scaffold 在屏幕原点 (0,0) 可命中**（框架的 `_HitTestableAtOrigin`，
+    用来替代早期的「原点假触摸」方案）。外壳 Scaffold 也在 (0,0) 画了自己的
+    statusBar 槽（仅 iOS 注册、opaque 的 `MetaData`），命中测试到它就停了，
+    内层页面永远轮不到；
+    ② 要求 `PrimaryScrollController` 有已挂载的 client，而外壳 Scaffold 拿到的是
+    ShellRoute 那个路由级 controller，页面用的是各自分支路由的，`hasClients` 为 false。
+    **症状**：手势事件其实到了，但谁的列表都不动。
+    **对策**：`lib/core/ui/scroll_to_top.dart` 自己接 `handleStatusBarTap()`，
+    用滚动通知（`ScrollMetricsNotification` 管首帧、`ScrollNotification` 管用户滚动）
+    收集存活的 `ScrollPosition`，只动「纵向且 pixels > 0」的那些。
+    挂在 `MaterialApp.builder` 最外层，一处覆盖所有路由。
+    诊断：`scroll` 标签的日志会写「候选 N 个 / 需要回顶 M 个」——
+    没有这行说明引擎没发事件，有这行但 M=0 说明列表没被收集到。
+23. **iOS 上很多「手感想当然」的东西都要单独核验**，因为它们都是框架按平台分支实现的，
+    在 Android 上跑得好不代表 iOS 也对：点状态栏回顶（#22）、
+    状态栏图标明暗（`SystemUiOverlayStyle.statusBarBrightness`）、
+    侧滑返回（`PageTransitionsTheme` 的 iOS 默认已是 Cupertino，本项目没覆盖所以正常）、
+    惯性回弹（`ScrollBehavior` 平台分支）、键盘收起行为（`ScrollView.keyboardDismissBehavior`
+    默认是 `manual`，iOS 上用户习惯 `onDrag`）。
 
 ---
 
