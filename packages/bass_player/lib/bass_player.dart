@@ -226,8 +226,14 @@ class BassPlayer {
   }
 
   Future<BassEngineInfo> _initialize() async {
-    if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) {
-      throw UnsupportedError('BASS playback is available on Android only');
+    // iOS 走 packages/bass_player/ios 的实现（BASS + 自研 biquad 均衡器），
+    // 通道名、方法名、事件字段与 Android 完全一致，所以这里只需要放开平台判断。
+    const supported = {
+      TargetPlatform.android,
+      TargetPlatform.iOS,
+    };
+    if (kIsWeb || !supported.contains(defaultTargetPlatform)) {
+      throw UnsupportedError('BASS playback is available on Android and iOS only');
     }
     _eventSubscription ??= _events.receiveBroadcastStream().listen(
       _handleEvent,

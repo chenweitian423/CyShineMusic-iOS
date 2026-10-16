@@ -23,7 +23,9 @@ class TaggerPlatformBackend {
     required bool includeLyrics,
     required bool includeArtwork,
   }) async {
-    if (Platform.isAndroid) {
+    // iOS 也有原生实现（ios/Runner/CyShineNativePlugin.swift 的 native_tagger，
+    // 读用 AVFoundation；不支持的格式会返回明确的错误而不是静默失败）。
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
         final result = await _nativeTagger
             .invokeMapMethod<String, Object?>('read', <String, Object?>{
@@ -37,12 +39,12 @@ class TaggerPlatformBackend {
       } on MissingPluginException {
         await AppLogger.write(
           'tagger',
-          'android native metadata reader missing, falling back to plugin',
+          'native metadata reader missing, falling back to plugin',
         );
       } catch (e) {
         await AppLogger.write(
           'tagger',
-          'android native metadata read FAIL: $e',
+          'native metadata read FAIL: $e',
         );
       }
     }
@@ -79,7 +81,7 @@ class TaggerPlatformBackend {
           'hasArtwork=$hasArtwork',
     );
 
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
         final result = await _writeWithNativeTagger(
           path,
@@ -91,7 +93,7 @@ class TaggerPlatformBackend {
         if (result != null) {
           await AppLogger.write(
             'tagger',
-            'android native metadata OK lyricsLen=${result.lyricsLength} '
+            'native metadata OK lyricsLen=${result.lyricsLength} '
                 'artworkLen=${result.artworkLength}',
           );
           return result;
@@ -99,12 +101,12 @@ class TaggerPlatformBackend {
       } on MissingPluginException {
         await AppLogger.write(
           'tagger',
-          'android native metadata missing, falling back to plugin',
+          'native metadata missing, falling back to plugin',
         );
       } catch (e, s) {
-        await AppLogger.write('tagger', 'android native metadata FAIL: $e');
-        await AppLogger.write('tagger', 'android native metadata stack: $s');
-        throw StateError('android native tagger failed: $e');
+        await AppLogger.write('tagger', 'native metadata FAIL: $e');
+        await AppLogger.write('tagger', 'native metadata stack: $s');
+        throw StateError('native tagger failed: $e');
       }
     }
 

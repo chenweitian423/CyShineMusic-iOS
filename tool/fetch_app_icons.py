@@ -1,38 +1,63 @@
 #!/usr/bin/env python3
-"""从 assets/app_icons/*.png 生成 iOS 备用图标。
+"""从 assets/app_icons/classic.png 生成 iOS 所需的全部图标。
 
-为什么需要这个：
-  iOS 的备用图标（setAlternateIconName）必须在 Info.plist 的
-  CFBundleIcons / CFBundleAlternateIcons 里声明，并且图标文件要以
-  <name>.png / <name>@2x.png / <name>@3x.png 的形式打进 App bundle。
-  Android 端只需要一份 256x256 的 PNG 就够了，iOS 需要多档尺寸。
+为什么要这个脚本：
+  · iOS 主图标（AppIcon.appiconset）需要 15 个不同尺寸的 PNG，尺寸需求写在
+    Contents.json 里；
+  · iOS 备用图标（setAlternateIconName）必须在 Info.plist 的
+    CFBundleAlternateIcons 里声明，且每个都要 <name>.png / @2x / @3x 三档；
+  · 备用图标还必须被拷到 Runner.app/ **根目录**（不能放子目录），
+    这部分由 tool/patch_xcodeproj.py 负责接进工程。
+
+  Android 侧原本只要 256x256 一份，所以这里全部由 classic.png 派生。
+
+只依赖标准库（zlib + struct + colorsys）：CI 的 macOS runner 上的 python3
+没有 Pillow，脚本必须能在裸环境下跑。
 
 输出：
-  ios/Runner/Icons/icon_<variant>.png      60x60   (@1x)
-  ios/Runner/Icons/icon_<variant>@2x.png   120x120 (@2x)
-  ios/Runner/Icons/icon_<variant>@3x.png   180x180 (@3x)
-
-只用标准库（zlib + struct）做 PNG 解码/编码与双线性缩放，
-不依赖 Pillow，保证在 macOS / Linux / Windows 上都能跑。
+  ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png   主图标（15 个）
+  ios/Runner/Icons/icon_<variant>[@2x|@3x].png          备用图标（5 套 × 3 档）
 """
 
 from __future__ import annotations
 
-import glob
+import colorsys
+import json
 import os
 import struct
 import sys
 import zlib
 
-VARIANTS = ["midnight", "sky", "lavender", "mint", "peach"]
-TARGETS = [("", 60), ("@2x", 120), ("@3x", 180)]
-
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SOURCE_DIR = os.path.join(ROOT, "assets", "app_icons")
-OUTPUT_DIR = os.path.join(ROOT, "ios", "Runner", "Icons")
+MAIN_SOURCE = os.path.join(SOURCE_DIR, "classic.png")
+APPICON_DIR = os.path.join(ROOT, "ios", "Runner", "Assets.xcassets", "AppIcon.appiconset")
+ALT_ICON_DIR = os.path.join(ROOT, "ios", "Runner", "Icons")
+
+# 备用图标：从主图标做色相迁移派生，保证 6 套图标是同一个视觉家族。
+# 值 = (目标色相 0-255, 饱和度系数, 亮度系数)。
+# 白色音符饱和度接近 0，任何系数下都不会被改色 —— 这正是想要的效果。
+ALTERNATES = [
+    # 午夜蓝：深色海军蓝
+    ("midnight", 148, 0.95, 0.72),
+    # 晴空蓝：明亮的天空蓝
+    ("sky", 136, 0.90, 1.06),
+    # 雾紫：柔和的紫
+    ("lavender", 186, 0.85, 0.98),
+    # 薄荷青：低饱和 + 提亮，与主图标的鲜亮绿拉开区分
+    ("mint", 108, 0.70, 1.10),
+    # 暖桃粉：偏橙的暖桃色
+    ("peach", 12, 0.85, 1.05),
+]
+ALT_SIZES = [("", 60), ("@2x", 120), ("@3x", 180)]
+
+# 饱和度高于这个阈值才认为「是彩色」，才参与色相迁移。
+SATURATION_THRESHOLD = 40
 
 
-def read_png(path: str) -> tuple[int, int, list[list[tuple[int, int, int, int]]]]:
+# ---------------------------------------------------------------- PNG 读写
+
+def read_png(path):
     with open(path, "rb") as handle:
         data = handle.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
@@ -69,8 +94,7 @@ def read_png(path: str) -> tuple[int, int, list[list[tuple[int, int, int, int]]]
     raw = zlib.decompress(bytes(idat))
     stride = width * channels
 
-    # 反 PNG 行过滤。
-    pixels: list[tuple[int, int, int, int]] = []
+    rows = []
     previous = bytearray(stride)
     position = 0
     for _ in range(height):
@@ -105,29 +129,37 @@ def read_png(path: str) -> tuple[int, int, list[list[tuple[int, int, int, int]]]
         elif filter_type != 0:
             raise ValueError(f"{path} 未知行过滤类型 {filter_type}")
 
+        row = []
         for x in range(width):
             base = x * channels
             if channels == 4:
-                pixels.append((line[base], line[base + 1], line[base + 2], line[base + 3]))
+                row.append((line[base], line[base + 1], line[base + 2], line[base + 3]))
             else:
-                pixels.append((line[base], line[base + 1], line[base + 2], 255))
+                row.append((line[base], line[base + 1], line[base + 2], 255))
+        rows.append(row)
         previous = line
 
-    return width, height, [pixels[y * width : (y + 1) * width] for y in range(height)]
+    return width, height, rows
 
 
-def write_png(path: str, rows: list[list[tuple[int, int, int, int]]]) -> None:
+def write_png(path, rows, with_alpha=False):
+    """写 PNG。默认不带 alpha 通道（color type 2）。
+
+    iOS 的 app icon 不应该带 alpha —— App Store Connect 会因此拒绝上传，
+    Xcode 的 actool 也会告警。我们的图标全部是不透明的，所以直接写 RGB。
+    """
     height = len(rows)
     width = len(rows[0])
+    channels = 4 if with_alpha else 3
 
     raw = bytearray()
     for row in rows:
         raw.append(0)  # filter type 0
         for r, g, b, a in row:
-            raw += bytes((r, g, b, a))
+            raw += bytes((r, g, b, a)) if with_alpha else bytes((r, g, b))
     compressed = zlib.compress(bytes(raw), 9)
 
-    def chunk(tag: bytes, payload: bytes) -> bytes:
+    def chunk(tag, payload):
         return (
             struct.pack(">I", len(payload))
             + tag
@@ -135,7 +167,9 @@ def write_png(path: str, rows: list[list[tuple[int, int, int, int]]]) -> None:
             + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
         )
 
-    header = struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    color_type = 6 if with_alpha else 2
+    header = struct.pack(">IIBBBBB", width, height, 8, color_type, 0, 0, 0)
     with open(path, "wb") as handle:
         handle.write(b"\x89PNG\r\n\x1a\n")
         handle.write(chunk(b"IHDR", header))
@@ -143,15 +177,15 @@ def write_png(path: str, rows: list[list[tuple[int, int, int, int]]]) -> None:
         handle.write(chunk(b"IEND", b""))
 
 
-def resize(rows: list[list[tuple[int, int, int, int]]], size: int):
+def resize(rows, size):
     src_h = len(rows)
     src_w = len(rows[0])
+    if src_w == size and src_h == size:
+        return rows  # 尺寸相同就直接复用，省掉百万次循环
     scale_x = src_w / size
     scale_y = src_h / size
-    out: list[list[tuple[int, int, int, int]]] = []
-
+    out = []
     for y in range(size):
-        # 采样点用中心对齐，避免整体偏移半个像素。
         sy = (y + 0.5) * scale_y - 0.5
         y0 = max(0, min(src_h - 1, int(sy)))
         y1 = min(src_h - 1, y0 + 1)
@@ -173,31 +207,96 @@ def resize(rows: list[list[tuple[int, int, int, int]]], size: int):
     return out
 
 
-def main() -> int:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-    generated = 0
+def recolor(rows, target_hue, saturation_scale, value_scale):
+    """把彩色像素的色相整体迁到 target_hue（0-255），并按系数调整饱和度与亮度。
 
-    for variant in VARIANTS:
-        source = os.path.join(SOURCE_DIR, f"{variant}.png")
-        if not os.path.exists(source):
-            print(f"[skip] 缺少源图 {source}", file=sys.stderr)
-            continue
-        _, _, rows = read_png(source)
-        for suffix, size in TARGETS:
-            target = os.path.join(OUTPUT_DIR, f"icon_{variant}{suffix}.png")
-            write_png(target, resize(rows, size))
-            generated += 1
-            print(f"[ok] ios/Runner/Icons/icon_{variant}{suffix}.png ({size}x{size})")
+    白色音符的饱和度接近 0，所以不会被改色 —— 这正是想要的效果：
+    背景与装饰点换成新色系，音符保持纯白。
+    """
+    out = []
+    for row in rows:
+        new_row = []
+        for r, g, b, a in row:
+            h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
+            if s * 255 > SATURATION_THRESHOLD:
+                s = min(1.0, s * saturation_scale)
+                v = min(1.0, v * value_scale)
+                r2, g2, b2 = colorsys.hsv_to_rgb(target_hue / 255.0, s, v)
+                new_row.append((round(r2 * 255), round(g2 * 255), round(b2 * 255), a))
+            else:
+                new_row.append((r, g, b, a))
+        out.append(new_row)
+    return out
 
-    print()
-    if generated == 0:
-        print("[error] 没有生成任何图标。Info.plist 里声明了 icon_* 备用图标，"
-              "缺文件会导致 setAlternateIconName 失败。", file=sys.stderr)
+
+# ------------------------------------------------------------------- 主流程
+
+def write_app_icon_set(main_rows):
+    contents_path = os.path.join(APPICON_DIR, "Contents.json")
+    if not os.path.exists(contents_path):
+        print(f"[error] 找不到 {contents_path}", file=sys.stderr)
+        return 0
+
+    with open(contents_path, "r", encoding="utf-8") as handle:
+        contents = json.load(handle)
+
+    cache = {}
+    written = 0
+    for image in contents.get("images", []):
+        filename = image.get("filename")
+        if not filename:
+            continue  # 有些条目只占位、没有实际文件
+        size = float(image["size"].split("x")[0])
+        scale = float(image["scale"].rstrip("x"))
+        pixels = int(round(size * scale))
+        if pixels not in cache:
+            cache[pixels] = resize(main_rows, pixels)
+        write_png(os.path.join(APPICON_DIR, filename), cache[pixels])
+        written += 1
+    return written
+
+
+def write_alternate_icons(main_rows):
+    written = 0
+    # 色相迁移在 256x256 上做（空间不变），再放大到各档尺寸，省时间。
+    base = resize(main_rows, 256)
+    for variant, hue, saturation_scale, value_scale in ALTERNATES:
+        recolored = recolor(base, hue, saturation_scale, value_scale)
+        for suffix, size in ALT_SIZES:
+            write_png(
+                os.path.join(ALT_ICON_DIR, f"icon_{variant}{suffix}.png"),
+                resize(recolored, size),
+            )
+            written += 1
+    return written
+
+
+def main():
+    if not os.path.exists(MAIN_SOURCE):
+        print(f"[error] 找不到主图标源文件 {MAIN_SOURCE}", file=sys.stderr)
         return 1
 
-    print(f"[done] 共生成 {generated} 个文件 -> ios/Runner/Icons/")
-    print("       这些文件需要加入 Xcode 的 Runner target -> Copy Bundle Resources。")
-    print("       CI（flutter build ios）会通过 project.pbxproj 里的引用自动打包。")
+    width, height, main_rows = read_png(MAIN_SOURCE)
+    if width != height:
+        print(f"[error] 主图标必须是正方形，当前 {width}x{height}", file=sys.stderr)
+        return 1
+    print(f"[source] assets/app_icons/classic.png {width}x{height}")
+
+    app_count = write_app_icon_set(main_rows)
+    if app_count:
+        print(f"[ok] 主图标 {app_count} 个 -> ios/Runner/Assets.xcassets/AppIcon.appiconset/")
+    else:
+        print("[warn] 没有写入任何主图标，请检查 AppIcon.appiconset/Contents.json")
+
+    alt_count = write_alternate_icons(main_rows)
+    print(f"[ok] 备用图标 {alt_count} 个 -> ios/Runner/Icons/")
+    for variant, hue, saturation_scale, value_scale in ALTERNATES:
+        print(f"        icon_{variant}  hue={hue} sat={saturation_scale} brightness={value_scale}")
+
+    print()
+    print("[done] AppIcon.appiconset 由 asset catalog 自动处理；")
+    print("       Runner/Icons/ 由 tool/patch_xcodeproj.py 按单个文件接入")
+    print("       Copy Bundle Resources（不能用文件夹引用，见该脚本说明）。")
     return 0
 
 

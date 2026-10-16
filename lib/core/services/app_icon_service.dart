@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 enum AppIconVariant {
-  classic('classic', '经典白'),
+  classic('classic', '经典绿'),
   midnight('midnight', '午夜蓝'),
   sky('sky', '晴空蓝'),
   lavender('lavender', '雾紫'),

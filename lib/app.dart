@@ -73,6 +73,11 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
       final homeWidgetService = ref.read(musicHomeWidgetProvider);
       homeWidgetService.onOpenPlayer = _openWidgetPlayer;
       _homeWidgetService = homeWidgetService;
+    }
+    // audio_intent 通道在 Android 与 iOS 上都有原生实现
+    // （iOS 见 ios/Runner/CyShineNativePlugin.swift），两边都要挂监听。
+    // 桌面卡片仍只有 Android 可用（iOS 需要单独的 WidgetKit Extension）。
+    if (Platform.isAndroid || Platform.isIOS) {
       _audioIntentChannel.setMethodCallHandler((call) async {
         if (call.method != 'audioAvailable') return;
         _externalAudioRequested = true;
@@ -103,7 +108,9 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
   @override
   void dispose() {
     _homeWidgetService?.onOpenPlayer = null;
-    if (Platform.isAndroid) _audioIntentChannel.setMethodCallHandler(null);
+    if (Platform.isAndroid || Platform.isIOS) {
+      _audioIntentChannel.setMethodCallHandler(null);
+    }
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
@@ -140,10 +147,10 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
   }
 
   Future<void> _openPendingExternalAudio() async {
-    if (!Platform.isAndroid ||
-        !mounted ||
-        !_externalAudioReady ||
-        _handlingExternalAudio) {
+    // 这里不再限定 Android：iOS 的 audio_intent 通道实现了 takePendingAudio，
+    // 会把「文件 App → 用栖弦打开」的文件复制进沙盒并返回真实路径，
+    // 与 Android 的语义一致。缺失插件的情况由下面的 MissingPluginException 兜住。
+    if (!mounted || !_externalAudioReady || _handlingExternalAudio) {
       return;
     }
     _handlingExternalAudio = true;
