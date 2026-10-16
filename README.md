@@ -1,3 +1,23 @@
+<!-- iOS-PORT-BANNER:START -->
+> ## 📱 本仓库是 iOS 移植分支
+>
+> 上游 [KevinllBin/CyShineMusic](https://github.com/KevinllBin/CyShineMusic) 是**纯 Android** 项目。
+> 本分支（`ios`）把它移植到了 iOS：11 个 Android-only 原生的 MethodChannel 全部 1:1 复刻，
+> Dart 业务层几乎原样复用。
+>
+> **⬇️ 下载已构建好的未签名 IPA：[Releases → v1.0.8-ios.1](https://github.com/chenweitian423/CyShineMusic-iOS/releases/latest)**
+>
+> 安装：下载 IPA → 用 **AltStore / SideStore** 侧载（免费证书 7 天有效）→
+> 设置 → 通用 → VPN与设备管理 信任证书。
+>
+> 构建与踩坑说明：[`ios/README-IOS.md`](./ios/README-IOS.md) ·
+> 内部技术文档：[`recon/IOS-PORT-INTERNALS.md`](./recon/IOS-PORT-INTERNALS.md) ·
+> CI 出包：[Actions → iOS Build](./actions/workflows/ios-build.yml)
+>
+> 以下为上游 README 原文（Android）。
+
+<!-- iOS-PORT-BANNER:END -->
+
 <div align="center">
   <img src="./logo.png" width="112" alt="CyShineMusic Logo">
   <h1>CyShineMusic</h1>

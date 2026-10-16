@@ -374,8 +374,20 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 ## 9. 与上游同步的策略
 
 - 只在 `main` 的 tag 上做 rebase，不追每日提交。
-- 冲突面刻意收窄到：`lib/app.dart`（1 处）、`app_icon_service.dart`（1 处）、
-  `storage_browser_service.dart`（1 处）、3 个 `pubspec.yaml`（各加 2 行）、以及新增的 `ios/` 与
-  `packages/*/ios/` 目录。
+- 冲突面刻意收窄到：`README.md` 顶部一段横幅（有 `iOS-PORT-BANNER:START/END` 标记，
+  冲突时直接保留本仓库的横幅即可）、`lib/app.dart`（1 处）、`app_icon_service.dart`（1 处）、
+  `storage_browser_service.dart`（1 处）、3 个 `pubspec.yaml`（各加 2 行）、
+  以及新增的 `ios/` 与 `packages/*/ios/` 目录。
 - `ios/` 整体是上游没有的，rebase 时不会被触碰。
 - 若上游改了原生通道契约，优先改 `packages/*/ios/` 去适配，**不要改 Dart**——否则冲突面会扩散。
+
+## 10. 分发方式
+
+| 渠道 | 地址 | 说明 |
+|---|---|---|
+| **GitHub Release（推荐，用户可见）** | https://github.com/chenweitian423/CyShineMusic-iOS/releases/latest | 附件 `CyShineMusic-unsigned.ipa`，仓库首页右侧 Releases 直接可见 |
+| Actions Artifact | Actions → 选运行 → 页面最底部 Artifacts | 保留 14 天；`CyShineMusic-unsigned-ipa.zip` 解开是同一个 ipa |
+| 本地副本 | `F:\codex项目\音乐源播放器\dist\CyShineMusic-unsigned.ipa` | 与 Release 附件逐字节一致 |
+
+**发新版本的流程**：CI 出包 → 下载 artifact → 取 `.ipa` →
+`gh release create <tag> <ipa路径> -R chenweitian423/CyShineMusic-iOS -t "<标题>" -F <说明文件> --latest`。

@@ -13,6 +13,11 @@ on:
         default: ''
   push:
     branches: [ ios ]
+    # 文档改动没必要跑 10 分钟的 macOS 构建。
+    paths-ignore:
+      - '**/*.md'
+      - 'screenshots/**'
+      - 'recon/**'
 
 env:
   # 项目要求 Flutter >= 3.41.0（pubspec: sdk ^3.11.4）。
