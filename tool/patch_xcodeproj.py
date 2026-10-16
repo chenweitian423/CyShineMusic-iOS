@@ -13,8 +13,11 @@ PBXSourcesBuildPhase 或 PBXResourcesBuildPhase），手改一两次还行，
 2. 把 ios/Runner/Icons/*.png 逐个加进 Copy Bundle Resources。
    ⚠️ 必须是**单个文件**而不是文件夹引用：文件夹引用会保持 Icons/ 子目录结构，
    而 iOS 解析 Info.plist 的 CFBundleIconFiles 是在 bundle 根目录找图的。
-3. 把 IPHONEOS_DEPLOYMENT_TARGET 提到 16.1 —— ActivityKit（实时活动 / 灵动岛）
-   的最低要求。Widget Extension 也按 16.1 编译。
+3. 把 IPHONEOS_DEPLOYMENT_TARGET 提到 16.2 —— 实时活动（ActivityKit）的最低要求。
+   注意：`Activity.request/update/end` 与 `ActivityContent` 是 **16.2** 才有的，
+   16.1 只有 `Activity.activities` 与 `ActivityAuthorizationInfo`（踩过：按 16.1
+   写会得到一串 "is only available in iOS 16.2 or newer"）。
+   Widget Extension 也按同一版本编译（见 tool/build_widget_extension.sh 的 MIN_IOS）。
 4. 所有步骤幂等，可重复执行。
 
 用法：python3 tool/patch_xcodeproj.py
@@ -45,7 +48,7 @@ RUNNER_SOURCES = [
      "../CyShineMusicWidget/CyShineActivityAttributes.swift"),
 ]
 
-DEPLOYMENT_TARGET = "16.1"
+DEPLOYMENT_TARGET = "16.2"
 
 # 早期版本用的是「Icons 文件夹引用」，需要迁移掉。
 LEGACY_ICONS_FILE = "C7A0E0032E0000000000A003"

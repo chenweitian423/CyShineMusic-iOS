@@ -478,7 +478,7 @@ final class CyShineIncomingAudio {
   /// 处理 `cyshinemusic://` 深链 —— 点击实时活动卡片 / 灵动岛按钮 / 桌面小组件时
   /// 由 AppDelegate 与 SceneDelegate 调用。返回 true 表示已消费掉这个 URL。
   static func handleAppURL(_ url: URL) -> Bool {
-    if #available(iOS 16.1, *),
+    if #available(iOS 16.2, *),
        CyShineLiveActivityBridge.shared?.handleIncomingURL(url) == true {
       return true
     }

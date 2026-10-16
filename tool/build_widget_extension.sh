@@ -30,8 +30,9 @@ SRC="$ROOT/ios/CyShineMusicWidget"
 BUILD="$ROOT/build/CyShineMusicWidget"
 
 NAME="CyShineMusicWidget"
-# ActivityKit（实时活动）与灵动岛 UI 的最低版本，与 patch_xcodeproj.py 保持一致。
-MIN_IOS="16.1"
+# 实时活动（ActivityKit）的最低版本，与 patch_xcodeproj.py 保持一致。
+# 16.2 而不是 16.1：Activity.request / update / end / ActivityContent 都是 16.2 起才有。
+MIN_IOS="16.2"
 
 if ! command -v xcrun >/dev/null 2>&1; then
   echo "[error] 找不到 xcrun —— 这个脚本只能在 macOS 上跑。" >&2

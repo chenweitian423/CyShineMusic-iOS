@@ -1,6 +1,8 @@
 // CyShineMusic 灵动岛（实时活动）+ 锁屏播放卡片。
 //
-// 只在 iOS 16.1+ 生效 —— 这是 ActivityKit 与灵动岛 UI 的最低版本。
+// 灵动岛 UI 本身是 iOS 16.1 起的，但主 App 侧发起/更新/结束活动用的
+// `Activity.request/update/end` 与 `ActivityContent` 是 **16.2** 才有的。
+// 两端必须同一个门槛，否则会出现「UI 能编译、桥接编译不过」，这里统一按 16.2。
 // 主 App 侧由 ios/Runner/CyShineLiveActivityBridge.swift 负责 start/update/end。
 
 import ActivityKit
@@ -15,7 +17,7 @@ private let toggleURL = URL(string: "cyshinemusic://player/toggle")
 private let previousURL = URL(string: "cyshinemusic://player/previous")
 private let nextURL = URL(string: "cyshinemusic://player/next")
 
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 struct CyShineLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: CyShineActivityAttributes.self) { context in
@@ -80,7 +82,7 @@ struct CyShineLiveActivityWidget: Widget {
 
 // MARK: - 锁屏卡片
 
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 private struct CyShineLockScreenView: View {
     let context: ActivityViewContext<CyShineActivityAttributes>
 
@@ -122,7 +124,7 @@ private struct CyShineLockScreenView: View {
 
 /// 封面。优先读 App Group 共享容器里的文件；拿不到（没开 App Groups 能力）
 /// 就回退到扩展内置的占位图 —— 这样灵动岛在两种情况下都好看。
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 private struct CyShineArtwork: View {
     let context: ActivityViewContext<CyShineActivityAttributes>
     let size: CGFloat
@@ -161,7 +163,7 @@ private struct CyShineArtwork: View {
 ///
 /// 播放中用 `ProgressView(timerInterval:)` —— 系统会自己推进，主 App 不需要
 /// 每秒推更新；暂停时退化成静态的 `ProgressView(value:)`。
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 private struct CyShineProgressBar: View {
     let context: ActivityViewContext<CyShineActivityAttributes>
 
@@ -184,10 +186,10 @@ private struct CyShineProgressBar: View {
 
 /// 上一首 / 播放暂停 / 下一首。
 ///
-/// 用 `Link` 而不是 AppIntent：`Link` 在 iOS 16.1 就能用，点一下会打开 App
+/// 用 `Link` 而不是 AppIntent：`Link` 在 iOS 16.2 就能用，点一下会打开 App
 /// 并交给 Dart 执行（见 CyShineLiveActivityBridge 对 `cyshinemusic://` 的处理）。
 /// 代价是会切到前台 —— 锁屏上本来就有系统播放控件，所以这里够用。
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 private struct CyShineTransportButtons: View {
     let playing: Bool
     let tint: Color

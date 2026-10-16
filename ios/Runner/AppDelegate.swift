@@ -26,9 +26,11 @@ let cyShineURLScheme = "cyshinemusic"
     }
 
     // 实时活动（灵动岛）/ 桌面小组件的桥接。
-    // ActivityKit 需要 iOS 16.1+；Runner 的部署目标已是 16.1，这里再判一次
-    // 是为了让代码在更低的部署目标下也能编译。
-    if #available(iOS 16.1, *),
+    // Activity.request/update/end 与 ActivityContent 都是 iOS 16.2 起才有
+    // （16.1 只有 Activity.activities 与 ActivityAuthorizationInfo）。
+    // Runner 的部署目标已是 16.2，这里再判一次是为了让代码在更低的
+    // 部署目标下也能编译。
+    if #available(iOS 16.2, *),
        let registrar = engineBridge.pluginRegistry
         .registrar(forPlugin: "CyShineLiveActivityBridge") {
       CyShineLiveActivityBridge.register(with: registrar.messenger())

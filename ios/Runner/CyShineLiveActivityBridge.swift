@@ -25,7 +25,7 @@ import Flutter
 import Foundation
 import UIKit
 
-@available(iOS 16.1, *)
+@available(iOS 16.2, *)
 final class CyShineLiveActivityBridge: NSObject {
 
   static let channelName = "cy_shine_music/live_activity"

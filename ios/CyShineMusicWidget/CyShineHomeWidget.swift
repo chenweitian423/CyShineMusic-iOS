@@ -153,7 +153,7 @@ struct CyShineHomeWidget: Widget {
 
 /// iOS 17 起 WidgetKit 要求用 `containerBackground` 提供背景；
 /// 16.x 上只能用普通的 `background`。这里做一次可用性分支，
-/// 让扩展在 16.1 与 17+ 上都能正常渲染。
+/// 让扩展在 16.2 与 17+ 上都能正常渲染。
 private extension View {
     @ViewBuilder
     func cyShineWidgetBackground() -> some View {
