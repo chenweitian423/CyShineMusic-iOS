@@ -1,9 +1,14 @@
 name: Android Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
+  # 本仓库是 iOS 移植分支：没有 Android 签名密钥（secrets.MAIN_*），
+  # 这套流程在这里只会在「Prepare main signing」失败并刷屏 Actions
+  # （建 tag 发 iOS Release 时会顺带触发一次）。
+  # 保留文件以缩小与上游的 rebase 冲突面，仅停用自动触发；需要时手动跑。
+  workflow_dispatch:
+  # push:
+  #   tags:
+  #     - 'v*.*.*'
 
 permissions:
   contents: write
