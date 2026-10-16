@@ -20,8 +20,14 @@ enum AppIconVariant {
       values.firstWhere((icon) => icon.code == code, orElse: () => classic);
 }
 
-bool get supportsCustomAppIcons =>
-    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+// iOS 走 setAlternateIconName，图标必须预打包并在 Info.plist 的
+// CFBundleAlternateIcons 里声明（见 ios/Runner/Info.plist）。
+// 与 Android 的差别：切换时系统会弹一次提示，无法绕过。
+bool get supportsCustomAppIcons {
+  if (kIsWeb) return false;
+  return defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+}
 
 final appIconProvider =
     AsyncNotifierProvider<AppIconController, AppIconVariant>(

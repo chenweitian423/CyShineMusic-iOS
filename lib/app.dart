@@ -5,6 +5,7 @@ import 'dart:io';
 // 1.8.x, even though material_color_utilities marks it deprecated internally.
 // ignore_for_file: deprecated_member_use
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -31,6 +32,12 @@ import 'theme/app_theme.dart';
 import 'theme/dynamic_color_scheme.dart';
 import 'theme/dynamic_color_status.dart';
 
+/// dynamic_color 只实现了 Android / Windows / Linux / macOS，**没有 iOS 实现**。
+/// 在 iOS 上直接调用它的插件方法会抛 MissingPluginException，所以这里做平台守卫：
+/// iOS 走项目自带的主题色体系（settings.themeSeed），与 Android 上的表现一致。
+bool get _supportsPlatformDynamicColor =>
+    !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
 class CyShineMusicApp extends ConsumerStatefulWidget {
   const CyShineMusicApp({super.key});
 
@@ -56,7 +63,12 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _corePaletteFuture = DynamicColorPlugin.getCorePalette();
+    _corePaletteFuture = _supportsPlatformDynamicColor
+        ? DynamicColorPlugin.getCorePalette().then<CorePalette?>(
+            (value) => value,
+            onError: (Object _) => null,
+          )
+        : Future<CorePalette?>.value(null);
     if (Platform.isAndroid) {
       final homeWidgetService = ref.read(musicHomeWidgetProvider);
       homeWidgetService.onOpenPlayer = _openWidgetPlayer;
@@ -232,12 +244,22 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
         false;
   }
 
+  /// iOS 上没有 dynamic_color 原生实现，DynamicColorBuilder 会抛
+  /// MissingPluginException。这里在没有平台实现时直接用 (null, null) 调用
+  /// 同一个 builder，下游逻辑一行都不用改。
+  Widget _platformDynamicColorBuilder({
+    required Widget Function(ColorScheme?, ColorScheme?) builder,
+  }) {
+    if (!_supportsPlatformDynamicColor) return builder(null, null);
+    return DynamicColorBuilder(builder: builder);
+  }
+
   @override
   Widget build(BuildContext context) {
     final settings = ref.watch(settingsProvider);
     final themeMode = settings.themeMode;
 
-    return DynamicColorBuilder(
+    return _platformDynamicColorBuilder(
       builder: (lightDynamic, darkDynamic) {
         return FutureBuilder<CorePalette?>(
           future: _corePaletteFuture,

@@ -17,3 +17,5 @@ flutter:
       android:
         package: com.cyshine.bass_player
         pluginClass: BassPlayerPlugin
+      ios:
+        pluginClass: BassPlayerPlugin

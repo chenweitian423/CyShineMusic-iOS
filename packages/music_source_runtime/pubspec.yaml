@@ -17,5 +17,7 @@ flutter:
       android:
         package: com.cyshine.music_source_runtime
         pluginClass: MusicSourceRuntimePlugin
+      ios:
+        pluginClass: MusicSourceRuntimePlugin
 
 

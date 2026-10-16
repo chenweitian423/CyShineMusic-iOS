@@ -66,7 +66,9 @@ class StorageBrowserService {
 
   final MethodChannel _channel;
 
-  bool get isSupported => Platform.isAndroid;
+  // iOS 沙盒没有全盘扫描，但 App Documents 与用户通过文档选择器授权的目录
+  // 仍然可以浏览，所以这里也返回 true（原生侧实现见 ios/Runner/CyShineNativePlugin.swift）。
+  bool get isSupported => Platform.isAndroid || Platform.isIOS;
 
   Future<List<StorageBrowserEntry>> listRoots() async {
     if (!isSupported) return const [];

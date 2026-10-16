@@ -1,0 +1,4 @@
+module CBass {
+    umbrella header "CBassShim.h"
+    export *
+}

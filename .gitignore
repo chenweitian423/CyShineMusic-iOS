@@ -64,3 +64,8 @@ CLAUDE.md
 # Gradle
 .gradle/
 **/.gradle/
+
+# BASS iOS 二进制不入库（官方再分发限制；自用免费、商用需授权）。
+# 构建前用 tool/fetch_bass_ios.sh 拉到本地。
+packages/bass_player/ios/Frameworks/
+packages/bass_player/ios/Classes/CHeaders/bass*.h

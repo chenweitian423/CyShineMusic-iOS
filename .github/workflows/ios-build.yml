@@ -1,0 +1,128 @@
+name: iOS Build (unsigned IPA)
+
+# 在 macOS runner 上编译 iOS 产物。产出的 IPA 是**未签名**的，
+# 需要用 AltStore / SideStore / 自签工具在设备上安装。
+# 详见 ios/README-IOS.md。
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: '要构建的分支或 tag'
+        required: false
+        default: ''
+  push:
+    branches: [ ios ]
+
+env:
+  # 项目要求 Flutter >= 3.41.0（pubspec: sdk ^3.11.4）。
+  FLUTTER_VERSION: '3.47.7'
+  FLUTTER_STORAGE_BASE_URL: https://storage.flutter-io.cn
+  PUB_HOSTED_URL: https://pub.flutter-io.cn
+
+jobs:
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter doctor / version
+        run: |
+          flutter --version
+          flutter doctor -v
+
+      # BASS 的二进制按官方要求不入库，构建前从 un4seen 取。
+      # 没有这一步，pod install 会直接报「未找到 BASS iOS 二进制」。
+      - name: Fetch BASS iOS binaries
+        run: bash tool/fetch_bass_ios.sh
+
+      # preload.js 在 Android 与 iOS 各有一份，必须是同一份内容。
+      # 这里做硬校验，防止只改一侧导致两端音源行为不一致。
+      - name: Verify preload.js parity
+        run: |
+          set -e
+          a=android/app/src/main/assets/music_source_preload.js
+          b=packages/music_source_runtime/ios/Resources/music_source_preload.js
+          if ! diff -q "$a" "$b"; then
+            echo "::error::music_source_preload.js 两端不一致。请同步："
+            echo "  cp $a $b"
+            diff -u "$a" "$b" || true
+            exit 1
+          fi
+          echo "preload.js md5: $(md5 -q "$a")"
+
+      - name: Prepare iOS alternate icons
+        run: bash tool/fetch_app_icons.sh
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Unit tests
+        # 上游测试里有若干依赖真机/网络的诊断用例，失败不阻断出包。
+        continue-on-error: true
+        run: flutter test
+
+      - name: Pod install
+        working-directory: ios
+        run: |
+          pod repo update || true
+          pod install --verbose
+
+      - name: Build iOS (no codesign)
+        run: |
+          flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        run: |
+          set -e
+          APP_PATH=build/ios/iphoneos/Runner.app
+          test -d "$APP_PATH" || { echo "::error::$APP_PATH 不存在，构建没有产出 app"; exit 1; }
+          rm -rf build/ipa
+          mkdir -p build/ipa/Payload
+          cp -R "$APP_PATH" build/ipa/Payload/
+          cd build/ipa
+          zip -qry ../CyShineMusic-unsigned.ipa Payload
+          cd ../..
+          ls -lh build/CyShineMusic-unsigned.ipa
+          echo "### 产物" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "未签名 IPA: build/CyShineMusic-unsigned.ipa" >> "$GITHUB_STEP_SUMMARY"
+          echo "App 大小: $(du -sh "$APP_PATH" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "安装方式：用 AltStore / SideStore 侧载（免费证书 7 天有效，需定期重签）。" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: CyShineMusic-unsigned-ipa
+          path: build/CyShineMusic-unsigned.ipa
+          retention-days: 14
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: |
+            ios/Pods/Target Support Files/**/*.log
+            build/ios/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
