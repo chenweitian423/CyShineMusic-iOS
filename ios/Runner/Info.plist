@@ -27,69 +27,19 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 
-	<!-- 备用图标：对应 lib/core/services/app_icon_service.dart 的 6 个变体，
-	     classic 是主图标（AppIcon），其余 5 个在这里声明。
-	     图标文件由 tool/fetch_app_icons.sh 从 assets/app_icons/*.png 生成并
-	     放进 Runner/Icons/，再经 Xcode 的 Copy Bundle Resources 打进包。
+	<!-- 备用图标（6 款）走**资产目录**，不在这里手工声明 CFBundleIcons。
+	     手工往 Info.plist 塞 CFBundleAlternateIcons 在较新的 Xcode / iOS 上
+	     会静默失效（表现为 setAlternateIconName 直接失败，或
+	     supportsAlternateIcons 返回 false），这条踩过。
+	     现在的做法：
+	       · 主图标   ios/Runner/Assets.xcassets/AppIcon.appiconset/
+	       · 备用图标 ios/Runner/Assets.xcassets/AppIcon{Name}.appiconset/ ×5
+	       · 由 tool/fetch_app_icons.py 从 assets/app_icons/classic.png 生成
+	       · 由 tool/patch_xcodeproj.py 写入构建设置
+	         ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS=YES
+	         ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES="AppIconMidnight …"
+	         Xcode 再据此自动生成 CFBundleIcons / CFBundleAlternateIcons。
 	     iOS 的限制：切换图标时系统会弹一次提示，无法绕过。 -->
-	<key>CFBundleIcons</key>
-	<dict>
-		<key>CFBundlePrimaryIcon</key>
-		<dict>
-			<key>CFBundleIconFiles</key>
-			<array>
-				<string>AppIcon60x60</string>
-			</array>
-		</dict>
-		<key>CFBundleAlternateIcons</key>
-		<dict>
-			<key>icon_midnight</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>icon_midnight</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>icon_sky</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>icon_sky</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>icon_lavender</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>icon_lavender</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>icon_mint</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>icon_mint</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-			<key>icon_peach</key>
-			<dict>
-				<key>CFBundleIconFiles</key>
-				<array>
-					<string>icon_peach</string>
-				</array>
-				<key>UIPrerenderedIcon</key>
-				<false/>
-			</dict>
-		</dict>
-	</dict>
 
 	<!-- 后台播放：audio_service 需要它才能在锁屏/切后台后继续播。
 	     这是 Android 前台服务在 iOS 上的唯一等价物。 -->

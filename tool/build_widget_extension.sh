@@ -12,6 +12,10 @@
 # 例如：
 #   bash tool/build_widget_extension.sh build/ios/iphoneos/Runner.app
 #
+# 可选环境变量（不传就用 Info.plist 里写死的版本）：
+#   IOS_BUILD_NAME    覆盖 CFBundleShortVersionString，与主 App 的 --build-name 一致
+#   IOS_BUILD_NUMBER  覆盖 CFBundleVersion，与主 App 的 --build-number 一致
+#
 # 只在 macOS 上可用（需要 Xcode 的 iphoneos SDK）。
 set -euo pipefail
 
@@ -70,13 +74,25 @@ xcrun --sdk iphoneos swiftc \
 
 echo "[3/4] 组装 .appex"
 cp "$SRC/Info.plist" "$APPEX/Info.plist"
-# Xcode 通常在打包时注入这两项，这里是手工组装，显式补上：
+# Xcode 通常在打包时注入这几项，这里是手工组装，显式补上：
 #  - MinimumOSVersion: 系统用它判断能否加载这个扩展
 #  - CFBundleSupportedPlatforms: 让设备认为这是 iOS 平台的可执行体
 /usr/libexec/PlistBuddy -c "Add :MinimumOSVersion string $MIN_IOS" "$APPEX/Info.plist" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Set :MinimumOSVersion $MIN_IOS" "$APPEX/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms array" "$APPEX/Info.plist" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Add :CFBundleSupportedPlatforms:0 string iPhoneOS" "$APPEX/Info.plist" 2>/dev/null || true
+
+# 版本号与主 App 对齐（主 App 由 --build-name / --build-number 注入）。
+# 扩展与主 App 的 CFBundleVersion 必须一致，否则 iOS 会拒绝加载扩展，
+# 表现为「灵动岛怎么都不出现」而控制台只有一条很含糊的提示。
+if [ -n "${IOS_BUILD_NAME:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $IOS_BUILD_NAME" "$APPEX/Info.plist"
+  echo "      CFBundleShortVersionString = $IOS_BUILD_NAME"
+fi
+if [ -n "${IOS_BUILD_NUMBER:-}" ]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $IOS_BUILD_NUMBER" "$APPEX/Info.plist"
+  echo "      CFBundleVersion = $IOS_BUILD_NUMBER"
+fi
 
 echo "[4/4] 嵌入 $APP_PATH/PlugIns/"
 mkdir -p "$APP_PATH/PlugIns"

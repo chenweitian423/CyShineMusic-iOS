@@ -56,6 +56,8 @@ public final class CyShineNativePlugin: NSObject, FlutterPlugin {
     connect("cy_shine_music/app_task", messenger) { [appTask] call, result in
       appTask.handle(call, result)
     }
+    // 原生 → Dart 的日志桥。必须最先注册，后面各处才敢往里写。
+    CyShineNativeLog.register(with: messenger)
     CyShineIncomingAudio.shared.bind(to: messenger)
   }
 
@@ -70,27 +72,43 @@ public final class CyShineNativePlugin: NSObject, FlutterPlugin {
 // MARK: - 应用图标
 //
 // Android 用 activity-alias 可以无提示切换；iOS 只能用 setAlternateIconName，
-// 且：
-//   1. 图标必须预先打进 bundle 并在 Info.plist 的 CFBundleIcons /
-//      CFBundleAlternateIcons 里声明（见 ios/Runner/Info.plist）；
-//   2. 切换时系统会弹一次提示，无法绕过（这是平台限制，不是实现问题）。
+// 且有几条硬约束：
+//   1. 备用图标必须**预先打进 bundle**，并在 Info.plist 的 CFBundleAlternateIcons
+//      里声明 —— 名字与图标文件必须一一对应；
+//   2. 切换时系统会弹一次提示，无法绕过（平台限制，不是实现问题）；
+//   3. 图标一旦涉及资产目录（Assets.car），就必须走 Xcode 的
+//      「Alternate App Icon Sets」构建设置，手工往 Info.plist 塞
+//      CFBundleAlternateIcons 在新 Xcode / 新 iOS 上会静默失效
+//      （表现为 supportsAlternateIcons 为 false 或切换直接报错）。
+//
+// 所以这里不赌单一来源：每个变体维护一串**候选名**，按顺序尝试，
+// 第一个成功的就采用。候选名与 tool/fetch_app_icons.py、tool/patch_xcodeproj.py
+// 生成的两套图标一一对应。
 
 @available(iOS 13.0, *)
 final class CyShineAppIconChannel {
 
-  /// Dart 侧的 AppIconVariant.code -> Info.plist 里声明的图标名。
+  /// Dart 侧的 AppIconVariant.code -> 系统里的图标名候选（按优先级）。
   /// classic 是主图标，对应 setAlternateIconName(nil)。
-  private static let alternateNames: [String: String] = [
-    "midnight": "icon_midnight",
-    "sky": "icon_sky",
-    "lavender": "icon_lavender",
-    "mint": "icon_mint",
-    "peach": "icon_peach",
+  ///
+  ///  · `AppIcon<Name>`  —— 资产目录里的备用图标集（Xcode 官方路径，
+  ///    由 ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES 声明）
+  ///  · `icon_<code>`    —— 旧路径：Runner/Icons/ 下散装的 PNG + Info.plist 手工声明
+  private static let alternateCandidates: [String: [String]] = [
+    "midnight": ["AppIconMidnight", "icon_midnight"],
+    "sky": ["AppIconSky", "icon_sky"],
+    "lavender": ["AppIconLavender", "icon_lavender"],
+    "mint": ["AppIconMint", "icon_mint"],
+    "peach": ["AppIconPeach", "icon_peach"],
   ]
 
-  private static let codeByAlternateName: [String: String] = {
+  /// 反查表：任意候选名 -> Dart 侧 code。currentCode() 用它把
+  /// `UIApplication.alternateIconName` 还原成 code。
+  private static let codeByIconName: [String: String] = {
     var map: [String: String] = [:]
-    for (code, name) in alternateNames { map[name] = code }
+    for (code, names) in alternateCandidates {
+      for name in names { map[name] = code }
+    }
     return map
   }()
 
@@ -105,7 +123,7 @@ final class CyShineAppIconChannel {
         result(FlutterError(code: "INVALID_ARGS", message: "请选择应用图标", details: nil))
         return
       }
-      if code != "classic" && Self.alternateNames[code] == nil {
+      if code != "classic" && Self.alternateCandidates[code] == nil {
         result(FlutterError(code: "ICON_CHANGE_FAILED",
                             message: "iOS 未声明该备用图标",
                             details: "unknown icon code: \(code)"))
@@ -120,31 +138,84 @@ final class CyShineAppIconChannel {
 
   private func currentCode() -> String {
     guard let name = UIApplication.shared.alternateIconName else { return "classic" }
-    return Self.codeByAlternateName[name] ?? "classic"
+    return Self.codeByIconName[name] ?? "classic"
   }
 
   private func setIcon(code: String, result: @escaping FlutterResult) {
-    let target = code == "classic" ? nil : Self.alternateNames[code]
     let current = UIApplication.shared.alternateIconName
-    if current == target {
-      // iOS 对「设成同一个图标」会回错误，这里直接短路，保持 Dart 侧语义幂等。
-      result(currentCode())
+    if code == "classic" {
+      if current == nil { result("classic"); return }
+      apply(nil, code: code) { error in result(error) }
       return
     }
 
+    let candidates = Self.alternateCandidates[code] ?? []
+    // 已经在用这个变体（任意一个候选名）时直接短路：
+    // iOS 对「设成同一个图标」会回错误，这里保持 Dart 侧语义幂等。
+    if let current, candidates.contains(current) {
+      result(currentCode())
+      return
+    }
+    applyFirstWorking(candidates, code: code, index: 0, errors: [], result: result)
+  }
+
+  /// 依次尝试候选名，第一个成功即返回；全失败时把所有原因一起报回去。
+  private func applyFirstWorking(_ candidates: [String],
+                                 code: String,
+                                 index: Int,
+                                 errors: [String],
+                                 result: @escaping FlutterResult) {
+    guard index < candidates.count else {
+      let detail = errors.isEmpty ? "没有可用的候选图标名" : errors.joined(separator: " | ")
+      CyShineNativeLog.write("app-icon", "切换 \(code) 全部失败：\(detail)")
+      result(FlutterError(code: "ICON_CHANGE_FAILED",
+                          message: "无法更换桌面图标",
+                          details: detail))
+      return
+    }
+    let name = candidates[index]
+    apply(name, code: code) { [weak self] error in
+      guard let self else { return }
+      if let error {
+        self.applyFirstWorking(candidates,
+                               code: code,
+                               index: index + 1,
+                               errors: errors + ["\(name): \(Self.describe(error))"],
+                               result: result)
+        return
+      }
+      CyShineNativeLog.write("app-icon", "图标已切换为 \(name)")
+      result(self.currentCode())
+    }
+  }
+
+  /// 真正调用系统 API。completion 拿到 nil 表示成功。
+  private func apply(_ name: String?,
+                     code: String,
+                     result: @escaping (Error?) -> Void) {
+    guard UIApplication.shared.supportsAlternateIcons else {
+      // 这一条最常被忽略：系统直接告诉你不支持，报错信息也不会有别的线索。
+      CyShineNativeLog.write("app-icon",
+                             "supportsAlternateIcons=false（当前=\(code)），系统或图标清单不允许切换")
+      DispatchQueue.main.async {
+        result(NSError(
+          domain: "CyShineAppIcon",
+          code: 1,
+          userInfo: [NSLocalizedDescriptionKey:
+                      "系统不支持备用图标（supportsAlternateIcons=false），请检查备用图标是否已打进包并正确声明"]))
+      }
+      return
+    }
     DispatchQueue.main.async {
-      UIApplication.shared.setAlternateIconName(target) { error in
-        if let error {
-          DispatchQueue.main.async {
-            result(FlutterError(code: "ICON_CHANGE_FAILED",
-                                message: "无法更换桌面图标",
-                                details: error.localizedDescription))
-          }
-          return
-        }
-        DispatchQueue.main.async { result(self.currentCode()) }
+      UIApplication.shared.setAlternateIconName(name) { error in
+        DispatchQueue.main.async { result(error) }
       }
     }
+  }
+
+  static func describe(_ error: Error) -> String {
+    let ns = error as NSError
+    return "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
   }
 }
 

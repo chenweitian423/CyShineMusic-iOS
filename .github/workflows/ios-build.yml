@@ -81,9 +81,26 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
-      # 幂等：把新增的 Swift 文件接进 Runner 的 Compile Sources，并把部署目标
-      # 对齐到 16.1（ActivityKit 的最低要求）。正常情况仓库里的 pbxproj 已经
-      # 是注入好的，这一步是防止漏提交导致 CI 与本地不一致。
+      # iOS 有独立的版本号体系（tool/ios_version.txt 是唯一来源）：
+      #   CFBundleShortVersionString <- tool/ios_version.txt（手工维护）
+      #   CFBundleVersion             <- workflow run number（自动单调递增）
+      # 不再跟着上游 Android 的 1.0.8 走，每一次出包都是一个新 build。
+      - name: Resolve iOS version
+        id: version
+        run: |
+          set -e
+          VERSION="$(tr -d '[:space:]' < tool/ios_version.txt)"
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){0,2}$'; then
+            echo "::error::tool/ios_version.txt 内容 '$VERSION' 不是 x.y.z 形式"
+            exit 1
+          fi
+          echo "name=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "number=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "iOS 版本: $VERSION (${{ github.run_number }})"
+
+      # 幂等：把新增的 Swift 文件接进 Runner 的 Compile Sources，把部署目标
+      # 对齐到 16.2（实时活动的最低要求），并写入备用图标的资产目录构建设置。
+      # 正常情况仓库里的 pbxproj 已经注入好了，这一步是防止漏提交导致 CI 与本地不一致。
       - name: Ensure Xcode project wiring
         run: python3 tool/patch_xcodeproj.py
 
@@ -126,12 +143,18 @@ jobs:
 
       - name: Build iOS (no codesign)
         run: |
-          flutter build ios --release --no-codesign
+          flutter build ios --release --no-codesign \
+            --build-name="${{ steps.version.outputs.name }}" \
+            --build-number="${{ steps.version.outputs.number }}"
 
       # Widget Extension（灵动岛实时活动 + 桌面小组件）。
       # 独立编译再塞进 PlugIns/，等价于 Xcode 的 Embed App Extensions 阶段，
       # 但不需要往 Flutter 生成的 Runner.xcodeproj 里加 target。
       - name: Build & embed widget extension
+        env:
+          # 扩展的 CFBundleVersion 必须与主 App 一致，否则 iOS 拒绝加载扩展。
+          IOS_BUILD_NAME: ${{ steps.version.outputs.name }}
+          IOS_BUILD_NUMBER: ${{ steps.version.outputs.number }}
         run: bash tool/build_widget_extension.sh build/ios/iphoneos/Runner.app
 
       - name: Verify embedded extension
@@ -145,8 +168,47 @@ jobs:
           grep -q "com.apple.widgetkit-extension" \
             "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
             || { echo "::error::扩展 Info.plist 缺少 widgetkit NSExtensionPointIdentifier"; exit 1; }
+          grep -q "NSSupportsLiveActivities" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
+            || { echo "::error::扩展 Info.plist 缺少 NSSupportsLiveActivities"; exit 1; }
+          APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
+          EXT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist")
+          echo "主 App CFBundleVersion=$APP_VER / 扩展=$EXT_VER"
+          test "$APP_VER" = "$EXT_VER" \
+            || { echo "::error::扩展与主 App 的 CFBundleVersion 不一致"; exit 1; }
           echo "扩展已就位："
           ls -la "$APP/PlugIns/CyShineMusicWidget.appex"
+
+      # 备用图标必须真的进到 Info.plist 与 Assets.car，否则 setAlternateIconName
+      # 会在真机上直接失败。这里只做**告警级**校验并打印全量信息 ——
+      # 图标不可用不该拦掉出包（实时活动等其它能力不受影响），
+      # 但日志要能一眼看出是「Xcode 没采纳资产目录」还是别的。
+      - name: Verify alternate app icons
+        run: |
+          set +e
+          APP=build/ios/iphoneos/Runner.app
+          echo "::group::资产目录里的图标集"
+          ls -d ios/Runner/Assets.xcassets/AppIcon*.appiconset
+          echo "::endgroup::"
+          echo "::group::Info.plist 的 CFBundleIcons"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIcons" "$APP/Info.plist"
+          echo "::endgroup::"
+          MISSING=0
+          for name in AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach; do
+            /usr/libexec/PlistBuddy -c "Print :CFBundleIcons:CFBundleAlternateIcons:$name" "$APP/Info.plist" >/dev/null 2>&1 \
+              || { echo "::warning::Info.plist 缺少备用图标 $name"; MISSING=$((MISSING+1)); }
+          done
+          echo "::group::Assets.car 中的图标相关条目"
+          xcrun --sdk iphoneos assetutil --info "$APP/Assets.car" 2>/dev/null \
+            | grep -oE '"Name" *: *"[^"]*"' | sort -u | head -40
+          echo "::endgroup::"
+          if [ "$MISSING" -gt 0 ]; then
+            echo "::warning::$MISSING 个备用图标没有出现在 Info.plist —— 图标切换多半仍然会失败"
+          else
+            echo "备用图标 5 个已在 Info.plist 中声明"
+          fi
+          exit 0
 
       - name: Package unsigned IPA
         run: |
@@ -164,6 +226,7 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "未签名 IPA: build/CyShineMusic-unsigned.ipa" >> "$GITHUB_STEP_SUMMARY"
+          echo "版本: ${{ steps.version.outputs.name }} (${{ steps.version.outputs.number }})" >> "$GITHUB_STEP_SUMMARY"
           echo "App 大小: $(du -sh "$APP_PATH" | cut -f1)" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"

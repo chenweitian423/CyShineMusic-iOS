@@ -14,6 +14,7 @@ import '../../core/models/enums.dart';
 import '../../core/music_sources/music_source_controller.dart';
 import '../../core/services/permission_service.dart';
 import '../../core/services/app_icon_service.dart';
+import '../../core/services/app_logger.dart';
 import '../../core/storage/settings_store.dart';
 import '../../core/sync/webdav_sync_controller.dart';
 import '../../core/ui/app_toast.dart';
@@ -1086,9 +1087,20 @@ class SettingsPage extends ConsumerWidget {
         '桌面图标已设为${selected.label}',
         type: AppToastType.success,
       );
-    } catch (_) {
+    } catch (error) {
+      // 把真实原因落到「日志」页：iOS 拒绝换图标的理由（supportsAlternateIcons
+      // 为 false、图标清单对不上、侧载重签丢了 PlugIns…）只有这里看得到，
+      // 提示语本身给不出信息量。
+      final detail = error is PlatformException
+          ? '${error.message ?? ''} ${error.details ?? ''}'.trim()
+          : '$error';
+      await AppLogger.write('app-icon', '切换失败: $detail');
       if (context.mounted) {
-        showAppToast(context, '无法更换桌面图标，请稍后重试', type: AppToastType.error);
+        showAppToast(
+          context,
+          '无法更换桌面图标，原因见「日志」页（app-icon）',
+          type: AppToastType.error,
+        );
       }
     } finally {
       if (toolbar.mounted) toolbar.state = wasToolbarVisible;

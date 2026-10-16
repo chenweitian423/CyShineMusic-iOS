@@ -42,6 +42,8 @@ class LiveActivityService {
 
   final Ref _ref;
   bool _available = false;
+  bool _checking = false;
+  bool _subscriptionsReady = false;
   String? _activeTrackId;
   String? _lastSignature;
   StreamSubscription<PlaybackState>? _playbackSubscription;
@@ -54,33 +56,51 @@ class LiveActivityService {
   Future<void> initialize() async {
     if (!Platform.isIOS) return;
     _channel.setMethodCallHandler(_handleNativeCall);
+    await _ensureAvailable();
+  }
+
+  /// 检查系统的实时活动开关。
+  ///
+  /// 刻意做成可以反复调用：用户可能先播放、才想起来去
+  /// 「设置 → 栖弦 → 实时活动」打开开关 —— 只在启动时检查一次的话，
+  /// 就得重启 App 才生效，表现成「灵动岛怎么都不出现」。
+  /// 每次播放状态变化都会重试一次，代价只是一次轻量通道调用。
+  Future<void> _ensureAvailable() async {
+    if (!Platform.isIOS || _available || _checking) return;
+    _checking = true;
     try {
-      final supported = await _channel.invokeMethod<bool>('isSupported') ?? false;
+      final supported =
+          await _channel.invokeMethod<bool>('isSupported') ?? false;
       if (!supported) {
         await AppLogger.write(
           'live-activity',
-          '系统关闭了实时活动（设置 → 栖弦 → 实时活动），已跳过',
+          '系统未开启实时活动（设置 → 栖弦 → 实时活动），暂不推送；开关打开后无需重启即可生效',
         );
         return;
       }
       _available = true;
-      // 和原生保持一致：播放传输走 playbackState，曲目变化走 playerController。
-      _playbackSubscription = _ref
-          .read(playerAudioHandlerProvider)
-          .playbackState
-          .listen(_onPlaybackState);
-      // 时长通常比播放状态晚一步解析出来，进度条要靠这次更新才会出现。
-      _durationSubscription = _ref
-          .read(playerAudioHandlerProvider)
-          .durationStream
-          .listen((_) => unawaited(_push(afterArtwork: false)));
+      _attachListeners();
       await AppLogger.write('live-activity', '实时活动已就绪');
     } on MissingPluginException {
       _available = false;
     } catch (error) {
       _available = false;
       await AppLogger.write('live-activity', '初始化失败: $error');
+    } finally {
+      _checking = false;
     }
+  }
+
+  void _attachListeners() {
+    if (_subscriptionsReady) return;
+    _subscriptionsReady = true;
+    final handler = _ref.read(playerAudioHandlerProvider);
+    // 播放传输走 playbackState，曲目变化走 playerController。
+    _playbackSubscription = handler.playbackState.listen(_onPlaybackState);
+    // 时长通常比播放状态晚一步解析出来，进度条要靠这次更新才会出现。
+    _durationSubscription = handler.durationStream.listen(
+      (_) => unawaited(_push(afterArtwork: false)),
+    );
   }
 
   // MARK: - 原生回调
@@ -126,7 +146,11 @@ class LiveActivityService {
 
   /// 曲目变化（可能是换歌，也可能是首次播放）。
   void publish(PlayerState state) {
-    if (!_available) return;
+    if (!_available) {
+      // 可能只是「实时活动开关后来才打开」，重试一次而不是永远放弃。
+      unawaited(_ensureAvailable());
+      return;
+    }
     final track = state.track;
     if (track == null) {
       _end();
@@ -138,7 +162,10 @@ class LiveActivityService {
   }
 
   void _onPlaybackState(PlaybackState state) {
-    if (!_available) return;
+    if (!_available) {
+      unawaited(_ensureAvailable());
+      return;
+    }
     final playerState = _ref.read(playerControllerProvider);
     if (playerState.track == null) {
       _end();

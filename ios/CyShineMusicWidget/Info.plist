@@ -30,6 +30,13 @@
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
 
+	<!-- 实时活动开关也要在**扩展**这一侧声明。
+	     官方文档写的是「主 App 的 Info.plist」，但社区实践（含 Flutter 的
+	     live_activities 插件）都要求两边都写 —— 只写主 App 时会出现
+	     「Activity.request 成功、灵动岛不渲染」这种没有报错的静默失败。 -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
+
 	<!-- 与主 App 一致的深链 scheme 白名单（Link 打开 App 用） -->
 	<key>CFBundleURLTypes</key>
 	<array>

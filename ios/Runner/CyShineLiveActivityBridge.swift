@@ -72,7 +72,7 @@ final class CyShineLiveActivityBridge: NSObject {
     ) { [weak self] _ in
       guard let self, let pending = self.pendingStart else { return }
       self.pendingStart = nil
-      self.applyStart(pending)
+      _ = self.performStart(pending)
     }
   }
 
@@ -81,6 +81,10 @@ final class CyShineLiveActivityBridge: NSObject {
   private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "isSupported":
+      // 顺手把一次性的诊断信息打到 App 内「日志」页。
+      // 灵动岛不出现时，用户只要截一张日志就能判断是「开关关了」还是
+      // 「扩展根本没打进包」还是「系统拒绝了发起」，不用来回猜。
+      CyShineNativeLog.write("live-activity", Self.diagnostics())
       result(ActivityAuthorizationInfo().areActivitiesEnabled)
 
     case "start":
@@ -94,11 +98,13 @@ final class CyShineLiveActivityBridge: NSObject {
         return
       }
       if UIApplication.shared.applicationState == .active {
-        applyStart(args)
+        applyStart(args, result: result)
       } else {
         pendingStart = args
+        CyShineNativeLog.write("live-activity",
+                               "App 不在前台，已暂存发起，回到前台再补")
+        result(true)
       }
-      result(true)
 
     case "update":
       guard let args = call.arguments as? [String: Any] else {
@@ -116,6 +122,31 @@ final class CyShineLiveActivityBridge: NSObject {
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// 一次性的环境诊断。用来区分「没打进包」和「打进包但系统不给显示」。
+  static func diagnostics() -> String {
+    var parts: [String] = []
+    parts.append("iOS \(UIDevice.current.systemVersion)")
+    parts.append("开关=\(ActivityAuthorizationInfo().areActivitiesEnabled)")
+    parts.append("在跑的活动=\(Activity<CyShineActivityAttributes>.activities.count)")
+
+    // 扩展是否真的躺在包里 —— 侧载工具重签时把 PlugIns 丢了的话，这里会是缺失。
+    let plugIns = Bundle.main.builtInPlugInsURL
+    let appex = plugIns?.appendingPathComponent("CyShineMusicWidget.appex")
+    let executable = appex?.appendingPathComponent("CyShineMusicWidget")
+    if let appex, let executable {
+      let hasBundle = FileManager.default.fileExists(atPath: appex.path)
+      let hasBinary = FileManager.default.fileExists(atPath: executable.path)
+      parts.append("扩展=\(hasBundle ? "在" : "缺失")/\(hasBinary ? "二进制在" : "二进制缺失")")
+    } else {
+      parts.append("扩展=无法定位 PlugIns")
+    }
+
+    let group = FileManager.default.containerURL(
+      forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier)
+    parts.append("AppGroup=\(group == nil ? "不可用（封面回退占位图）" : "可用")")
+    return parts.joined(separator: " ")
   }
 
   /// 由 AppDelegate / SceneDelegate 在收到 `cyshinemusic://…` 时调用。
@@ -150,13 +181,27 @@ final class CyShineLiveActivityBridge: NSObject {
     }
   }
 
-  private func applyStart(_ args: [String: Any]) {
-    guard let trackId = args["trackId"] as? String, !trackId.isEmpty else { return }
+  private func applyStart(_ args: [String: Any], result: @escaping FlutterResult) {
+    if let error = performStart(args) {
+      result(FlutterError(code: "LIVE_ACTIVITY_FAILED",
+                          message: "实时活动发起失败",
+                          details: "\(Self.describe(error)) | \(Self.diagnostics())"))
+    } else {
+      result(true)
+    }
+  }
+
+  /// 真正发起活动。返回 nil 表示成功。
+  private func performStart(_ args: [String: Any]) -> Error? {
+    guard let trackId = args["trackId"] as? String, !trackId.isEmpty else {
+      return NSError(domain: "CyShineLiveActivity", code: 1,
+                     userInfo: [NSLocalizedDescriptionKey: "缺少 trackId"])
+    }
 
     // 同一首歌重复 start 时退化成 update，避免灵动岛上出现两条。
     if let current = activity, current.attributes.trackId == trackId {
       applyUpdate(args)
-      return
+      return nil
     }
     endActivity(policy: .immediate)
 
@@ -169,25 +214,37 @@ final class CyShineLiveActivityBridge: NSObject {
         pushType: nil
       )
     } catch {
-      // 常见原因：App 不在前台、系统关闭了实时活动、或超过活动数量上限。
-      // 记一条日志，不抛给 Dart —— 实时活动失败不该影响播放。
       NSLog("[live-activity] 启动失败: \(error.localizedDescription)")
+      CyShineNativeLog.write("live-activity", "发起失败: \(Self.describe(error)) | \(Self.diagnostics())")
       activity = nil
+      // 桌面小组件不依赖 ActivityKit，失败也要把数据写进去。
       writeSharedState(args: args, artworkPath: nil)
       resolveArtworkForCurrent(args)
-      return
+      return error
     }
+    CyShineNativeLog.write("live-activity",
+                           "活动已发起 id=\(activity?.id ?? "?") title=\(payload.title)")
     writeSharedState(args: args, artworkPath: nil)
     resolveArtworkForCurrent(args)
+    return nil
+  }
+
+  static func describe(_ error: Error) -> String {
+    let ns = error as NSError
+    return "\(ns.domain)#\(ns.code) \(ns.localizedDescription)"
   }
 
   private func applyUpdate(_ args: [String: Any]) {
-    guard let activity else { return }
+    guard let activity else {
+      // 活动已经不在（用户划掉了 / 系统回收了）—— 当作一次新的发起。
+      _ = performStart(args)
+      return
+    }
     // 换歌了就走 start 的路径（会重建活动）
     if let trackId = args["trackId"] as? String,
        !trackId.isEmpty,
        trackId != activity.attributes.trackId {
-      applyStart(args)
+      _ = performStart(args)
       return
     }
     let payload = Self.payload(from: args)

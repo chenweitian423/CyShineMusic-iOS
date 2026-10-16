@@ -41,6 +41,9 @@ ICONS_DIR = os.path.join(ROOT, "ios", "Runner", "Icons")
 # 跨目录要写 "../<目录>/<文件>"。
 RUNNER_SOURCES = [
     ("CyShineNativePlugin.swift", "CyShineNativePlugin.swift"),
+    # 原生 → Dart 的日志桥：把原生失败（实时活动 / 备用图标…）回灌到
+    # App 内的「日志」页，否则 Release 包上只能看到 NSLog（用户看不到）。
+    ("CyShineNativeLog.swift", "CyShineNativeLog.swift"),
     ("CyShineLiveActivityBridge.swift", "CyShineLiveActivityBridge.swift"),
     # 与 Widget Extension 共享的属性定义：两边必须编译同一份源码，
     # 否则 ActivityAttributes 类型不匹配，系统匹配不到已启动的活动。
@@ -49,6 +52,18 @@ RUNNER_SOURCES = [
 ]
 
 DEPLOYMENT_TARGET = "16.2"
+
+# 资产目录里的备用图标集名。必须与
+#   · tool/fetch_app_icons.py 的 ALTERNATES 第 4 列
+#   · ios/Runner/CyShineNativePlugin.swift 的 alternateCandidates 首项
+# 逐字一致，否则 iOS 找不到图标。
+ALTERNATE_APPICON_NAMES = [
+    "AppIconMidnight",
+    "AppIconSky",
+    "AppIconLavender",
+    "AppIconMint",
+    "AppIconPeach",
+]
 
 # 早期版本用的是「Icons 文件夹引用」，需要迁移掉。
 LEGACY_ICONS_FILE = "C7A0E0032E0000000000A003"
@@ -147,6 +162,48 @@ def raise_deployment_target(text: str) -> str:
     return text
 
 
+def ensure_asset_catalog_settings(text: str) -> str:
+    """打开「把资产目录里所有 AppIcon 都编进去」+ 声明备用图标集。
+
+    为什么必须用构建设置而不是手写 Info.plist：
+      iOS 切备用图标时，系统只认 Info.plist 的 CFBundleAlternateIcons。
+      手工往 Info.plist 塞这个键在较新的 Xcode / iOS 上会静默失效
+      （setAlternateIconName 直接报错，或 supportsAlternateIcons 返回 false）。
+      Xcode 官方路径是：图标放进资产目录（Assets.xcassets/AppIcon<Name>.appiconset），
+      用 ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES 声明，
+      Xcode 在打包时自动生成 CFBundleIcons / CFBundleAlternateIcons。
+
+      · INCLUDE_ALL_APPICON_ASSETS：actool 默认只编主图标，
+        不打开这个开关备用图标集会被整个丢掉（Assets.car 里根本没有）。
+      · ALTERNATE_APPICON_NAMES：名字必须与 AppIcon<Name>.appiconset 目录名
+        逐字一致，也要与 ios/Runner/CyShineNativePlugin.swift 的
+        alternateCandidates 一致。
+    """
+    settings = [
+        "ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;",
+        f'ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "{" ".join(ALTERNATE_APPICON_NAMES)}";',
+    ]
+
+    added = 0
+    for setting in settings:
+        key = setting.split(" = ")[0]
+        if f"{key} =" in text:
+            continue
+        # 挂在每个 XCBuildConfiguration 的 buildSettings 开头，
+        # 与已有设置保持同样的缩进层级。
+        text, count = re.subn(
+            r"(\n\t\t\tbuildSettings = \{\n)",
+            lambda m, s=setting: m.group(1) + "\t\t\t\t" + s + "\n",
+            text,
+        )
+        added += count
+        print(f"[ok] 注入 {key}（{count} 个构建配置）")
+
+    if added == 0 and all(f"{s.split(' = ')[0]} =" in text for s in settings):
+        print("[ok] 图标构建设置已就位")
+    return text
+
+
 def main() -> int:
     if not os.path.exists(PBXPROJ):
         print(f"[error] 找不到 {PBXPROJ}", file=sys.stderr)
@@ -157,6 +214,7 @@ def main() -> int:
 
     text = strip_legacy_folder_reference(text)
     text = raise_deployment_target(text)
+    text = ensure_asset_catalog_settings(text)
 
     icons = sorted(glob.glob(os.path.join(ICONS_DIR, "*.png")))
     if not icons:

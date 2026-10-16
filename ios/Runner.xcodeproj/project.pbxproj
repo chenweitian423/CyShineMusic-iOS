@@ -12,6 +12,7 @@
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		C7A0F11D9116FCFE4D3F880E /* CyShineNativePlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A0F01D9116FCFE4D3F880E /* CyShineNativePlugin.swift */; };
+		C7A0F1C9F4417E2BEBA02F54 /* CyShineNativeLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A0F0C9F4417E2BEBA02F54 /* CyShineNativeLog.swift */; };
 		C7A0F1D5AEA198F7239B4A38 /* CyShineLiveActivityBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A0F0D5AEA198F7239B4A38 /* CyShineLiveActivityBridge.swift */; };
 		C7A0F1E12F1BE50698115DDF /* CyShineActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A0F0E12F1BE50698115DDF /* CyShineActivityAttributes.swift */; };
 		C7A0F11971130C0FC72DC43B /* icon_lavender.png in Resources */ = {isa = PBXBuildFile; fileRef = C7A0F01971130C0FC72DC43B /* icon_lavender.png */; };
@@ -68,6 +69,7 @@
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		C7A0F01D9116FCFE4D3F880E /* CyShineNativePlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CyShineNativePlugin.swift"; sourceTree = "<group>"; };
+		C7A0F0C9F4417E2BEBA02F54 /* CyShineNativeLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CyShineNativeLog.swift"; sourceTree = "<group>"; };
 		C7A0F0D5AEA198F7239B4A38 /* CyShineLiveActivityBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CyShineLiveActivityBridge.swift"; sourceTree = "<group>"; };
 		C7A0F0E12F1BE50698115DDF /* CyShineActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "../CyShineMusicWidget/CyShineActivityAttributes.swift"; sourceTree = "<group>"; };
 		C7A0F01971130C0FC72DC43B /* icon_lavender.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "Icons/icon_lavender.png"; sourceTree = "<group>"; };
@@ -159,6 +161,7 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				C7A0F01D9116FCFE4D3F880E /* CyShineNativePlugin.swift */,
+				C7A0F0C9F4417E2BEBA02F54 /* CyShineNativeLog.swift */,
 				C7A0F0D5AEA198F7239B4A38 /* CyShineLiveActivityBridge.swift */,
 				C7A0F0E12F1BE50698115DDF /* CyShineActivityAttributes.swift */,
 				C7A0F01971130C0FC72DC43B /* icon_lavender.png */,
@@ -354,6 +357,7 @@
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				C7A0F11D9116FCFE4D3F880E /* CyShineNativePlugin.swift in Sources */,
+				C7A0F1C9F4417E2BEBA02F54 /* CyShineNativeLog.swift in Sources */,
 				C7A0F1D5AEA198F7239B4A38 /* CyShineLiveActivityBridge.swift in Sources */,
 				C7A0F1E12F1BE50698115DDF /* CyShineActivityAttributes.swift in Sources */,
 			);
@@ -392,6 +396,8 @@
 		249021D3217E4FDB00AE95B9 /* Profile */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -446,6 +452,8 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
@@ -466,6 +474,8 @@
 		331C8088294A63A400263BE5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -483,6 +493,8 @@
 		331C8089294A63A400263BE5 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -498,6 +510,8 @@
 		331C808A294A63A400263BE5 /* Profile */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -513,6 +527,8 @@
 		97C147031CF9000F007C117D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -571,6 +587,8 @@
 		97C147041CF9000F007C117D /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -627,6 +645,8 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 9740EEB21CF90195004384FC /* Debug.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
@@ -649,6 +669,8 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = "AppIconMidnight AppIconSky AppIconLavender AppIconMint AppIconPeach";
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
 				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";

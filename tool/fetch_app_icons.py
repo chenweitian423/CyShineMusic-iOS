@@ -15,8 +15,20 @@
 没有 Pillow，脚本必须能在裸环境下跑。
 
 输出：
-  ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png   主图标（15 个）
-  ios/Runner/Icons/icon_<variant>[@2x|@3x].png          备用图标（5 套 × 3 档）
+  ios/Runner/Assets.xcassets/AppIcon.appiconset/*.png          主图标（15 个）
+  ios/Runner/Assets.xcassets/AppIcon<Name>.appiconset/*.png    备用图标（5 套）
+  ios/Runner/Icons/icon_<variant>[@2x|@3x].png                 备用图标散装副本（兜底）
+
+关于备用图标的两套产物：
+  iOS 切换备用图标有两条互斥的寻址路径 —— 资产目录（Assets.car）与
+  bundle 根目录的散装 PNG。历史上散装 + 手工 CFBundleAlternateIcons 是主流做法，
+  但在较新的 Xcode / iOS 上手工声明图标键会**静默失效**
+  （setAlternateIconName 报错，或 supportsAlternateIcons 返回 false）。
+  现在以资产目录为主（Xcode 官方路径，构建设置写在 tool/patch_xcodeproj.py），
+  散装副本保留作兜底：万一某个 Xcode 版本不吃
+  ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES，把 Info.plist 里的
+  CFBundleIcons 手工块加回去即可，PNG 已经在包里、不用重新生成。
+  原生侧（CyShineAppIconChannel）按候选名逐个尝试，两套名字都能命中。
 """
 
 from __future__ import annotations
@@ -32,22 +44,27 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 SOURCE_DIR = os.path.join(ROOT, "assets", "app_icons")
 MAIN_SOURCE = os.path.join(SOURCE_DIR, "classic.png")
 APPICON_DIR = os.path.join(ROOT, "ios", "Runner", "Assets.xcassets", "AppIcon.appiconset")
+ASSETS_DIR = os.path.join(ROOT, "ios", "Runner", "Assets.xcassets")
 ALT_ICON_DIR = os.path.join(ROOT, "ios", "Runner", "Icons")
 
 # 备用图标：从主图标做色相迁移派生，保证 6 套图标是同一个视觉家族。
 # 值 = (目标色相 0-255, 饱和度系数, 亮度系数)。
 # 白色音符饱和度接近 0，任何系数下都不会被改色 —— 这正是想要的效果。
+#
+# 第 4 个元素是资产目录里的图标集名（AppIcon<Name>.appiconset）。
+# 必须与 tool/patch_xcodeproj.py 的 ALTERNATE_APPICON_NAMES、
+# 以及 ios/Runner/CyShineNativePlugin.swift 的 alternateCandidates 一致。
 ALTERNATES = [
     # 午夜蓝：深色海军蓝
-    ("midnight", 148, 0.95, 0.72),
+    ("midnight", 148, 0.95, 0.72, "AppIconMidnight"),
     # 晴空蓝：明亮的天空蓝
-    ("sky", 136, 0.90, 1.06),
+    ("sky", 136, 0.90, 1.06, "AppIconSky"),
     # 雾紫：柔和的紫
-    ("lavender", 186, 0.85, 0.98),
+    ("lavender", 186, 0.85, 0.98, "AppIconLavender"),
     # 薄荷青：低饱和 + 提亮，与主图标的鲜亮绿拉开区分
-    ("mint", 108, 0.70, 1.10),
+    ("mint", 108, 0.70, 1.10, "AppIconMint"),
     # 暖桃粉：偏橙的暖桃色
-    ("peach", 12, 0.85, 1.05),
+    ("peach", 12, 0.85, 1.05, "AppIconPeach"),
 ]
 ALT_SIZES = [("", 60), ("@2x", 120), ("@3x", 180)]
 
@@ -256,15 +273,61 @@ def write_app_icon_set(main_rows):
     return written
 
 
-def write_alternate_icons(main_rows):
+def read_main_image_specs():
+    """主图标集的 image 列表，用于派生备用图标集的 Contents.json。
+
+    去掉 ios-marketing（1024x1024）：备用图标不需要它，
+    带上反而可能被 actool 判为非法条目。
+    """
+    contents_path = os.path.join(APPICON_DIR, "Contents.json")
+    if not os.path.exists(contents_path):
+        return None
+    with open(contents_path, "r", encoding="utf-8") as handle:
+        contents = json.load(handle)
+    return [image for image in contents.get("images", [])
+            if image.get("idiom") != "ios-marketing"]
+
+
+def write_alternate_icon_sets(recolored_by_variant, specs):
+    """把备用图标写成资产目录里的 AppIcon<Name>.appiconset。
+
+    Xcode 通过 ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES 把这些图标集
+    编进 Assets.car，并自动生成 Info.plist 的 CFBundleAlternateIcons。
+    """
+    set_name_of = {code: set_name for code, _, _, _, set_name in ALTERNATES}
     written = 0
-    # 色相迁移在 256x256 上做（空间不变），再放大到各档尺寸，省时间。
-    base = resize(main_rows, 256)
-    for variant, hue, saturation_scale, value_scale in ALTERNATES:
-        recolored = recolor(base, hue, saturation_scale, value_scale)
+    for code, recolored in recolored_by_variant.items():
+        directory = os.path.join(ASSETS_DIR, f"{set_name_of[code]}.appiconset")
+        os.makedirs(directory, exist_ok=True)
+        cache: dict[int, list] = {}
+        for image in specs:
+            filename = image.get("filename")
+            if not filename:
+                continue
+            pixels = int(round(float(image["size"].split("x")[0])
+                               * float(image["scale"].rstrip("x"))))
+            if pixels not in cache:
+                cache[pixels] = resize(recolored, pixels)
+            write_png(os.path.join(directory, filename), cache[pixels])
+            written += 1
+        with open(os.path.join(directory, "Contents.json"), "w", encoding="utf-8") as handle:
+            json.dump({"images": specs, "info": {"version": 1, "author": "xcode"}},
+                      handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    return written
+
+
+def write_loose_alternate_icons(recolored_by_variant):
+    """散装兜底副本：Runner/Icons/icon_<variant>[@2x|@3x].png。
+
+    资产目录路径失灵时可以把手写的 CFBundleAlternateIcons 加回 Info.plist
+    （图标已在包里），不用重新生成。默认不参与构建也不影响安装。
+    """
+    written = 0
+    for code, recolored in recolored_by_variant.items():
         for suffix, size in ALT_SIZES:
             write_png(
-                os.path.join(ALT_ICON_DIR, f"icon_{variant}{suffix}.png"),
+                os.path.join(ALT_ICON_DIR, f"icon_{code}{suffix}.png"),
                 resize(recolored, size),
             )
             written += 1
@@ -288,15 +351,27 @@ def main():
     else:
         print("[warn] 没有写入任何主图标，请检查 AppIcon.appiconset/Contents.json")
 
-    alt_count = write_alternate_icons(main_rows)
-    print(f"[ok] 备用图标 {alt_count} 个 -> ios/Runner/Icons/")
-    for variant, hue, saturation_scale, value_scale in ALTERNATES:
-        print(f"        icon_{variant}  hue={hue} sat={saturation_scale} brightness={value_scale}")
+    # 色相迁移在 256x256 上做（空间不变），再放大到各档尺寸，省时间。
+    base = resize(main_rows, 256)
+    recolored_by_variant = {}
+    for variant, hue, saturation_scale, value_scale, set_name in ALTERNATES:
+        recolored_by_variant[variant] = recolor(
+            base, hue, saturation_scale, value_scale)
+        print(f"        {set_name}  hue={hue} sat={saturation_scale} brightness={value_scale}")
+
+    specs = read_main_image_specs()
+    if not specs:
+        print("[warn] 读不到 AppIcon.appiconset/Contents.json，跳过备用图标集")
+    else:
+        set_count = write_alternate_icon_sets(recolored_by_variant, specs)
+        print(f"[ok] 备用图标 {set_count} 个 -> ios/Runner/Assets.xcassets/AppIcon*.appiconset/")
+
+    loose_count = write_loose_alternate_icons(recolored_by_variant)
+    print(f"[ok] 备用图标兜底副本 {loose_count} 个 -> ios/Runner/Icons/（默认不进包）")
 
     print()
-    print("[done] AppIcon.appiconset 由 asset catalog 自动处理；")
-    print("       Runner/Icons/ 由 tool/patch_xcodeproj.py 按单个文件接入")
-    print("       Copy Bundle Resources（不能用文件夹引用，见该脚本说明）。")
+    print("[done] 图标集由 asset catalog 处理；备用图标的启用靠 tool/patch_xcodeproj.py")
+    print("       写入的 ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES 构建设置。")
     return 0
 
 
