@@ -31,7 +31,8 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
   }
 
   /// load 被新的 load/stop/dispose 取代时使用。与 Android 端 CANCELLED 常量一致。
-  private static let cancelledCode = -1000
+  /// 必须显式声明成 Int32：BassError.code 是 Int32，否则字面量会被推成 Int 而报类型错。
+  private static let cancelledCode: Int32 = -1000
 
   // MARK: - 插件入口
 
@@ -41,7 +42,7 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     let methods = FlutterMethodChannel(name: methodChannelName, binaryMessenger: messenger)
     let events = FlutterEventChannel(name: eventChannelName, binaryMessenger: messenger)
     methods.setMethodCallHandler { [weak instance] call, result in
-      instance?.handle(call, result: result)
+      instance?.handleCall(call, result: result)
     }
     events.setStreamHandler(instance)
     // 让 instance 活到 engine 卸载为止。
@@ -85,7 +86,10 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
 
   // MARK: - 通道回调
 
-  private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+  /// 注意：不要把这个方法命名成 `handle(_:result:)`。
+  /// Flutter 的 `FlutterPlugin` 协议里有一个可选要求就叫这个名字，撞名会被编译器
+  /// 当成「实现了协议要求」，进而报出一串莫名其妙的错误。
+  private func handleCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "initialize":
       engineQueue.async { self.complete(result) { self.initializeEngine() } }
@@ -542,7 +546,8 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     case "opus":
       return specialized { BASS_OPUS_StreamCreateURL($0, 0, flags, nil, nil) }
     case "dsd":
-      return specialized { BASS_DSD_StreamCreateURL($0, 0, flags, nil, nil) }
+      // BASS_DSD_* 比其它附加库多一个 freq 参数（0 = 保持源采样率）。
+      return specialized { BASS_DSD_StreamCreateURL($0, 0, flags, nil, nil, 0) }
     case "m4a", "alac":
       // Apple 平台 BASS 核心直接走 CoreAudio 解 ALAC/AAC。
       return core()
@@ -576,7 +581,8 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
       let handle = path.withCString { BASS_OPUS_StreamCreateFile(0, $0, 0, 0, flags) }
       return handle != 0 ? handle : core()
     case "dsd":
-      let handle = path.withCString { BASS_DSD_StreamCreateFile(0, $0, 0, 0, flags) }
+      // 同 createNetworkStream：DSD 多一个 freq 参数。
+      let handle = path.withCString { BASS_DSD_StreamCreateFile(0, $0, 0, 0, flags, 0) }
       return handle != 0 ? handle : core()
     default:
       return core()

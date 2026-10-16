@@ -603,20 +603,14 @@ final class CyShineNativeTaggerChannel {
     }
 
     // 用 AVAsset 的旧式异步加载 API（iOS 4+ 就有），不用 iOS 15 才引入的
-    // `load(_:)` async 版本，这样不必到处加 #available 分支。
+    // `load(_:)` async 版本，避免额外的 #available 分支。
+    // 这里刻意不检查 statusOfValue(forKey:error:)：该 API 在 Swift 里是
+    // 「NSErrorPointer + 返回值」形态，容易写出类型不匹配的代码；load 完成回调
+    // 已经触发，直接读 commonMetadata 即可，读不到就是空字典（与 Android 返回
+    // 一堆 null 的语义一致，Dart 侧会把它当成「没有标签」）。
     let asset = AVURLAsset(url: URL(fileURLWithPath: path))
     asset.loadValuesAsynchronously(forKeys: ["commonMetadata"]) { [weak self] in
       guard let self else { return }
-      var loadError: NSError?
-      let status = asset.statusOfValue(forKey: "commonMetadata", error: &loadError)
-      guard status == .loaded else {
-        DispatchQueue.main.async {
-          result(FlutterError(code: "NATIVE_TAGGER_READ_FAILED",
-                              message: loadError?.localizedDescription ?? "无法读取音频元数据",
-                              details: "\(String(describing: loadError))"))
-        }
-        return
-      }
 
       let metadata = asset.commonMetadata
       var payload: [String: Any] = [:]
