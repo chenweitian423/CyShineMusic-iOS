@@ -142,16 +142,31 @@ def main() -> int:
         )
 
     # 4) 图标 -> PBXFileReference
+    # path 必须写成 "Icons/<name>"：sourceTree = "<group>" 是相对 Runner group 的，
+    # 而 Runner group 的 path 是 "Runner"。写成裸文件名会解析成 ios/Runner/<name>.png
+    # 而实际文件在 ios/Runner/Icons/ 下，构建时报
+    # "Build input file cannot be found: 'ios/Runner/icon_xxx.png'"。
+    # 注意不要把 path 写成 "Icons/<name>" 之外的形式——Xcode 对「普通文件引用」是
+    # 平铺拷贝到 bundle 根目录的，所以放在 Icons/ 子目录不影响 CFBundleIconFiles 查找。
     icon_ref_lines = []
     for path in icons:
         name = os.path.basename(path)
         file_id, _ = icon_ids(path)
-        if f"{file_id} /* {name} */ = {{isa = PBXFileReference" in text:
+        definition = f"{file_id} /* {name} */ = {{isa = PBXFileReference"
+        if definition in text:
+            # 已经存在：检查 path 是否写错，错了就地修（早期版本漏了 Icons/ 前缀）
+            wrong = f'{file_id} /* {name} */ = {{isa = PBXFileReference; ' \
+                    f'lastKnownFileType = image.png; path = "{name}";'
+            right = f'{file_id} /* {name} */ = {{isa = PBXFileReference; ' \
+                    f'lastKnownFileType = image.png; path = "Icons/{name}";'
+            if wrong in text:
+                text = text.replace(wrong, right, 1)
+                print(f"[fix] {name} 的 path 补上 Icons/ 前缀")
             continue
         icon_ref_lines.append(
             f"\t\t{file_id} /* {name} */ = "
             '{isa = PBXFileReference; lastKnownFileType = image.png; '
-            f'path = "{name}"; sourceTree = "<group>"; }};\n'
+            f'path = "Icons/{name}"; sourceTree = "<group>"; }};\n'
         )
     if icon_ref_lines:
         if ANCHOR_FILE_REF not in text:
