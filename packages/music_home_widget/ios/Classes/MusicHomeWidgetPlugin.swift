@@ -50,11 +50,15 @@ public final class MusicHomeWidgetPlugin: NSObject, FlutterPlugin {
     let channel = FlutterMethodChannel(name: channelName,
                                        binaryMessenger: registrar.messenger())
     instance.channel = channel
-    channel.setMethodCallHandler(instance.handle)
+    channel.setMethodCallHandler(instance.handleCall)
     registrar.publish(instance)
   }
 
-  private func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+  /// 注意：不要把这个方法命名成 `handle(_:result:)`。
+  /// Flutter 的 `FlutterPlugin` 协议里有一个可选要求就叫这个名字，
+  /// 撞名会被编译器当成「实现了协议要求」，进而报
+  /// 「must be declared public because it matches a requirement in public protocol」。
+  private func handleCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
     case "ready":
       // 与 Android 的 ready 语义一致：登记完成，允许开始推数据。
