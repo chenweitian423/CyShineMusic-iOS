@@ -19,7 +19,10 @@
 | `packages/music_home_widget/ios/` | 桌面卡片桥（podspec + Swift，写 App Group） | 是 |
 | `tool/fetch_bass_ios.sh` | 构建前下载 BASS iOS 二进制到 `packages/bass_player/ios/Frameworks/` | 是 |
 | `tool/fetch_app_icons.sh` + `tool/fetch_app_icons.py` | 从 `assets/app_icons/classic.png` 生成主图标（15 个尺寸）+ 5 套备用图标；只用标准库 | 是 |
-| `tool/patch_xcodeproj.py` | 把新增的 Swift 文件与 Icons 目录接进 `project.pbxproj`（幂等） | 初次需要 |
+| `ios/CyShineMusicWidget/` | Widget Extension 源码：灵动岛 + 锁屏卡片 + 桌面小组件；`CyShineActivityAttributes.swift` 会被主 App 与扩展**同时**编译 | 是 |
+| `ios/Runner/CyShineLiveActivityBridge.swift` | 实时活动的主 App 侧桥接（ActivityKit + App Group 写入 + 深链回调） | 是 |
+| `tool/build_widget_extension.sh` | 用 `xcrun swiftc` 独立编译扩展并塞进 `Runner.app/PlugIns/`（不进 `Runner.xcodeproj`） | 是 |
+| `tool/patch_xcodeproj.py` | 把新增的 Swift 文件与 Icons 目录接进 `project.pbxproj`（幂等，按文件名去重） | 初次需要 |
 | `tool/verify_preload_protocol.mjs` | 用 `node:vm` 验证 `preload.js` 的协议与**执行顺序**（CI 已接入） | 建议每次改 preload 后跑 |
 | `.github/workflows/ios-build.yml` | macOS runner 上编译并产出未签名 IPA | 可选 |
 
@@ -40,6 +43,9 @@
 | 编译不过 | Flutter 必须 **≥ 3.41.0**（本项目用 3.47.7 验证）；Xcode 15+；必须用 `Runner.xcworkspace` 而不是 `Runner.xcodeproj` |
 | 在国内拉不动依赖 | 构建前设 `FLUTTER_STORAGE_BASE_URL=https://storage.flutter-io.cn` 与 `PUB_HOSTED_URL=https://pub.flutter-io.cn` |
 | 未签名 IPA 装不上 | 未签名 IPA 必须用 AltStore / SideStore / 自签工具安装；免费证书 **7 天**有效，过期要重签 |
+| 装不上 / 灵动岛不出现 | 设备必须是 **iOS 16.2+**（`Activity.request/update/end` 是 16.2 才有的，见下方踩坑表） |
+| 灵动岛不出现 | 装好后先去 **设置 → 栖弦 → 实时活动** 确认已开启；且 App 要在**前台**才会发起活动 |
+| 桌面小组件一直显示「打开 App 播放点什么」 | 小组件的数据走 **App Group `group.com.cyshine.music`**，需要付费账号的 App Groups 能力。**免费签名拿不到，属预期降级**（灵动岛不受影响）。有付费证书时给 Runner 与 Widget 两个 target 都配上该能力即可 |
 | BASS 授权风险 | BASS 自用免费、**商用需自行购买授权**；本仓库刻意不携带 BASS 二进制，全部构建时下载 |
 | 上架失败（必然） | 自定义音源 + 在线音乐播放无法通过 App Store 审核，只能侧载/内测 |
 
@@ -115,7 +121,9 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | 备用图标（5 套） | ✅ 已实现（切换有系统提示，且需放开 `app_icon_service` 的平台判断——已改） |
 | 本地曲库 | ⚠️ 只能扫 App Documents + 用户授权目录（iOS 沙盒限制） |
 | 音频标签读写 | ⚠️ 读全格式可用；写仅 m4a 可用，FLAC 走纯 Dart；**写 mp3 暂不支持，会明确报错而不是写坏文件** |
-| 桌面小组件 | ⚠️ 数据桥已做，WidgetKit 卡片 UI 未做 |
+| 灵动岛 / 锁屏实时活动 | ✅ 已实现（展开态有传输按钮，紧凑态显示封面与波形，锁屏卡片带进度） |
+| 桌面小组件（small / medium） | ⚠️ UI 已做；真实数据需要 App Groups 能力（免费签名拿不到 → 停在引导态） |
+| 点状态栏回顶 | ✅ 已实现（框架实现被外壳 Scaffold 挡住，见下方踩坑表） |
 
 **还没做的验证：音乐播放链路。** 真机已装上并跑起来（能进首页），
 第一个真机 bug（导入音源报「音源初始化超时」）已在 `v1.0.8-ios.2` 修复。
@@ -142,3 +150,6 @@ Actions → `iOS Build (unsigned IPA)` → artifact `CyShineMusic-unsigned-ipa`�
 | 导入音源报「音源初始化超时」 | ★ 音源运行时的三步顺序**必须是 `preload.js` → `music_source_setup(metadata)` → 音源脚本**（`globalThis.lx` 在第二步才创建）。另外 JSCore 设了 `exceptionHandler` 后异常不一定留在 `context.exception` 里，必须在 handler 里自己留一份、并把加载失败直接抛回 Dart，否则任何 JS 错误都只会表现成「超时」。详情见 `recon/IOS-PORT-INTERNALS.md` 第 8 节 #15/#16 |
 | 想在没有 Mac 的情况下验证音源协议 | `node tool/verify_preload_protocol.mjs` —— 用 `node:vm` 隔离跑 preload 的协议与执行顺序，场景 B 专门复现「顺序写反 → `lx is not defined`」。已接入 CI |
 | 真机出问题不知道从哪查 | 先看 app 内**「日志」页**的 `music-source` 标签：JS 异常、脚本字节数、setup 是否完成、是否在等 `inited` 都会写在那里 |
+| 一串 `'Activity.request/update/end' is only available in iOS 16.2 or newer` | **实时活动的门槛是 16.2，不是 16.1**（16.1 只有 `Activity.activities` 与 `ActivityAuthorizationInfo`）。门槛要同时改四处：`tool/patch_xcodeproj.py` 的 `DEPLOYMENT_TARGET`、`tool/build_widget_extension.sh` 的 `MIN_IOS`、Runner 侧 `@available`/`#available`、Widget 扩展侧 `@available` |
+| 链接期 `duplicate symbol`，或 `Multiple commands produce '.../Runner.app/icon_xxx.png'` | `project.pbxproj` 里同一个文件被加了**两份**条目（历史手敲的 `C7A0E0…` ID 与脚本派生的 `C7A0F0…` 不兼容）。`tool/patch_xcodeproj.py` 现在按**文件名**先清后建，重跑一次即可收敛；脚本末尾会校验「每个文件在构建阶段恰好出现 1 次」 |
+| `Build input file cannot be found: 'ios/Runner/icon_xxx.png'` | 图标 `PBXFileReference` 的 `path` 要写 `Icons/<name>`（相对 Runner group）。脚本已自动修正 |

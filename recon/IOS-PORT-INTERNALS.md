@@ -243,7 +243,8 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 应用内自更新 | 下载 APK 安装 | ❌ 只能跳 App Store |
 | 换图标 | `activity-alias` 无提示切换 | ⚠️ `setAlternateIconName`，图标须预打包 + Info.plist 声明，**切换会弹系统提示** |
 | 媒体库扫描 | `MediaScannerConnection` | ❌ 无等价机制（`media_scan.scan` 直接返回 true） |
-| 主 App 驱动桌面卡片 | `AppWidget` RemoteViews | ❌ WidgetKit 跑在独立进程，只能经 App Group 共享数据 |
+| 主 App 驱动桌面卡片 | `AppWidget` RemoteViews | ⚠️ WidgetKit 跑在独立进程，只能经 App Group 共享数据；**免费签名没有 App Groups 能力** → 小组件停在引导态（灵动岛不受影响，见第 8 节 #29） |
+| 灵动岛 / 实时活动 | ❌ 无对应机制 | ✅ ActivityKit（iOS 16.2+）；传输按钮用 `Link` 回调 App，代价是会切前台 |
 | 主动退到后台 | `moveTaskToBack` | ❌ iOS 不允许 |
 | 后台常驻 | 前台服务 | ⚠️ 仅 `UIBackgroundModes: audio`（已在 Info.plist 配好） |
 
@@ -265,9 +266,12 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 加密层（md5/base64/AES/RSA + DER 解析） | `Classes/MusicSourceCrypto.swift` |
 | BASS 二进制与头文件拉取脚本 | `tool/fetch_bass_ios.sh` |
 | 备用图标生成（纯标准库 PNG 缩放） | `tool/fetch_app_icons.{sh,py}` |
-| Xcode 工程接入脚本（幂等） | `tool/patch_xcodeproj.py` |
+| Xcode 工程接入脚本（幂等，按文件名去重） | `tool/patch_xcodeproj.py` |
 | CI：macOS 出未签名 IPA | `.github/workflows/ios-build.yml` |
 | Dart 侧修正 3 处 | 见 6.2 |
+| 点状态栏回顶（自接 `handleStatusBarTap`） | `lib/core/ui/scroll_to_top.dart` |
+| 灵动岛 / 锁屏实时活动 + 桌面小组件 | `ios/CyShineMusicWidget/`、`ios/Runner/CyShineLiveActivityBridge.swift`、`lib/features/player/live_activity_service.dart`；详见 6.4 |
+| Widget Extension 独立编译并嵌入 | `tool/build_widget_extension.sh` + CI 的 `Build & embed widget extension` |
 
 ### 6.2 Dart 侧改动（全部）
 
@@ -277,6 +281,11 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | `lib/app.dart` | 补 `import 'package:flutter/foundation.dart';` | `kIsWeb` / `defaultTargetPlatform` 需要 |
 | `lib/core/services/app_icon_service.dart` | `supportsCustomAppIcons` 放开 iOS | 走 `setAlternateIconName` |
 | `lib/core/services/storage_browser_service.dart` | `isSupported` 放开 iOS | 沙盒目录仍可浏览 |
+| `packages/bass_player/lib/bass_player.dart` | 平台守卫加上 iOS | 真机上「搜歌播放」曾抛 `BASS playback is available on Android only`（第 8 节 #20） |
+| `lib/core/services/tagger_platform_flutter.dart` | 读写两边都放开 iOS | 否则 FLAC 标签写不了 |
+| `lib/core/ui/scroll_to_top.dart`（新增） | 自接 `handleStatusBarTap()`，收集存活的 `ScrollPosition` 回顶 | 框架实现被外壳 Scaffold 挡住（第 8 节 #22） |
+| `lib/features/player/live_activity_service.dart`（新增） | 实时活动的 Dart 侧驱动 | 见 6.4 |
+| `lib/main.dart` / `lib/app.dart` | 初始化 LiveActivityService；iOS 上激活 `liveActivitySyncProvider`；接管 `openPlayer` | 见 6.4 |
 
 `dart analyze lib packages` 结果：**1 issue**，是上游既有的 `onReorder` 弃用提示，与本次改动无关。
 
@@ -284,15 +293,61 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| P0 | **真机运行联调** | CI 已能出包，但没在 iPhone 上跑过。首要验证：能否进首页、能否导入音源、能否播完一首歌 |
-| P0 | 放开 `music_home_widget_service.dart:44` 的平台守卫 | 否则 iOS 小组件永远收不到数据 |
+| ~~P0~~ | ~~真机运行联调~~ | ✅ 已完成。真机已装上并跑起来；导入音源超时、搜歌播放、点状态栏不回顶三个 bug 已修 |
+| ~~P0~~ | ~~WidgetKit 卡片 UI + 灵动岛~~ | ✅ 已完成，见 6.4 |
 | P1 | iOS 写 mp3 标签 | 现在对非 ISO-BMFF 格式**明确报错**（不写坏文件）。方案：引入 `pod 'ID3TagEditor', '~> 5.5'`（纯 Swift，支持 ID3 读写 + 内嵌图）或 TagLib |
 | P1 | ISO-BMFF（m4a）标签写入 | `CyShineNativeTaggerChannel.writeTags` 里留了分支，需接 `AVAssetExportSession` 元数据重写 |
-| P2 | WidgetKit 卡片 UI | 现在只做了 App Group 数据桥；缺 `ios/CyShineMusicWidget/` target 与 SwiftUI 视图 |
-| P2 | App Group entitlement | `MusicHomeWidgetPlugin.appGroupIdentifier = "group.com.cyshine.music"`，需要在 Xcode 给 Runner 与 Widget target 都配 App Groups capability（本机无法生成 entitlements 文件） |
+| P1 | 真机核验灵动岛 | 出包后要在「设置 → 栖弦 → 实时活动」里确认已开启；灵动岛展开态才有传输按钮 |
+| P2 | App Group entitlement（桌面小组件的真实数据） | `group.com.cyshine.music` 需要**付费账号**的 App Groups 能力；免费签名拿不到，小组件会停在引导态（已降级，不白屏）。灵动岛不受影响 |
+| P2 | 灵动岛的封面 | 同上：封面走 App Group，没能力时回退到内置音符占位图 |
 | P2 | `audio_intent` 的 `openAudio` | 现在用 `UIActivityViewController`（分享面板）；Android 是 `ACTION_VIEW` 选播放器，iOS 只能这样 |
 | P3 | 本地曲库的目录授权 UI | 原生已提供 `addRoot`/`removeRoot`（bookmark 持久化），但 Dart 侧的 `storage_folder_picker_sheet` 还没有 iOS 分支去调它 |
-| P3 | 备用图标的真机验证 | 图标已按 bundle 根目录放置（见第 8 节倒数第 2 条），需在真机上确认 `setAlternateIconName` 能切 |
+| P3 | 备用图标的真机验证 | 图标已按 bundle 根目录放置（见第 8 节 #14），需在真机上确认 `setAlternateIconName` 能切 |
+| P3 | `ScrollView.keyboardDismissBehavior` | 默认 `manual`，iOS 用户习惯 `onDrag`（第 8 节 #23） |
+
+> 注：`lib/features/player/music_home_widget_service.dart:44` 的
+> `if (!Platform.isAndroid) return;` **保持不动** —— iOS 的桌面小组件数据由
+> `CyShineLiveActivityBridge` 在原生侧写入 App Group，不需要 Dart 再走一遍。
+
+### 6.4 Widget Extension（灵动岛 + 桌面小组件）
+
+```
+                    Dart（lib/features/player/live_activity_service.dart）
+                                  │  MethodChannel cy_shine_music/live_activity
+                                  │  start / update / end        ▲ control / openPlayer
+                                  ▼                              │
+        ios/Runner/CyShineLiveActivityBridge.swift  ─────────────┘
+                    │  Activity<CyShineActivityAttributes>
+                    │  写封面到 App Group：artwork/current.jpg
+                    │  写状态到 App Group UserDefaults：widget.*
+                    ▼
+        ┌───────────────────────────────────────────────┐
+        │  Runner.app/PlugIns/CyShineMusicWidget.appex  │
+        │  ├─ CyShineLiveActivityWidget  灵动岛/锁屏    │
+        │  └─ CyShineHomeWidget          桌面小组件     │
+        └───────────────────────────────────────────────┘
+```
+
+| 文件 | 归属 | 作用 |
+|---|---|---|
+| `ios/CyShineMusicWidget/CyShineActivityAttributes.swift` | **两个目标都编译** | `ActivityAttributes` + `ContentState`。同一份源码编译进 Runner 与扩展，保证类型一致（系统靠类型匹配已启动的活动） |
+| `ios/CyShineMusicWidget/CyShineLiveActivityWidget.swift` | 扩展 | 灵动岛展开/紧凑/最小态 + 锁屏卡片 + 封面/进度条/传输按钮 |
+| `ios/CyShineMusicWidget/CyShineHomeWidget.swift` | 扩展 | 桌面小组件（small / medium），读 App Group UserDefaults |
+| `ios/CyShineMusicWidget/CyShineWidgetBundle.swift` | 扩展 | `@main` 入口，导出上面两个 |
+| `ios/Runner/CyShineLiveActivityBridge.swift` | Runner | 通道 + ActivityKit 生命周期 + 封面落盘 + App Group 写入 |
+| `tool/build_widget_extension.sh` | 构建 | `xcrun swiftc` 独立编译 → 塞进 `PlugIns/` |
+
+**三条设计取舍（改之前先读）：**
+
+1. **更新频率压到最低。** Dart 只在「换歌 / 播放暂停 / 跳转 / 位置跨过 5 秒」时推一次；
+   播放中的进度条由原生侧 `ProgressView(timerInterval:)` 自己推进
+   （用 `ContentState.playbackStart/playbackEnd` 算出区间）。
+   实时活动每秒推更新既费电又会被系统限流。
+2. **控制按钮用 `Link` + `cyshinemusic://` 而不是 AppIntent。** `Link` 在 16.2 就能用，
+   代价是点一下会把 App 切到前台。锁屏上本来就有系统播放控件，够用。
+   URL 由 `AppDelegate` / `SceneDelegate` 接住 → `CyShineIncomingAudio.handleAppURL`
+   → 桥接 `handleIncomingURL` → 回灌 `control` 给 Dart。
+3. **桌面小组件降级到引导态而不是白屏**（见第 8 节 #29）。
 
 ---
 
@@ -320,7 +375,9 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | Pod install | 3 个本地 pod 全部 Installing，无「未找到 BASS iOS 二进制」 |
 | Dump pod link settings | 诊断输出（失败时用） |
 | Build iOS (no codesign) | success |
-| Package / Upload unsigned IPA | `CyShineMusic-unsigned.ipa` ≈ 11.9 MB |
+| Build & embed widget extension | `[ok] 扩展已嵌入`，`lipo -info` 输出 arm64 |
+| Verify embedded extension | `PlugIns/CyShineMusicWidget.appex` + 主二进制 + `com.apple.widgetkit-extension` 三项都在 |
+| Package / Upload unsigned IPA | `CyShineMusic-unsigned.ipa`（带扩展后约 +0.1 MB） |
 
 ### 7.3 产物自检（已做过一次，可复现）
 
@@ -330,6 +387,9 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | IPA 内 `Info.plist` | `CFBundleIdentifier=com.cyshine.music`、`CFBundleDisplayName=栖弦`、`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项 |
 | `Payload/Runner.app/` 根目录 | 有 `icon_midnight.png` / `@2x` / `@3x` 等 15 个（**不能在 Icons/ 子目录里**） |
 | `music_source_runtime.framework/music_source_preload.js` | 存在 |
+| `Payload/Runner.app/PlugIns/CyShineMusicWidget.appex/` | 存在 `CyShineMusicWidget` 主二进制 + `Info.plist`（`NSExtensionPointIdentifier=com.apple.widgetkit-extension`） |
+| IPA 内 `Info.plist` | 另含 `NSSupportsLiveActivities=true`、`CFBundleURLTypes` 里有 `cyshinemusic` |
+| `MinimumOSVersion`（App 与 appex） | 两边都是 16.2 |
 
 ---
 
@@ -432,6 +492,50 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
     侧滑返回（`PageTransitionsTheme` 的 iOS 默认已是 Cupertino，本项目没覆盖所以正常）、
     惯性回弹（`ScrollBehavior` 平台分支）、键盘收起行为（`ScrollView.keyboardDismissBehavior`
     默认是 `manual`，iOS 上用户习惯 `onDrag`）。
+24. ★★★ **实时活动（ActivityKit）的可用性门槛是 iOS 16.2，不是 16.1。**
+    16.1 只放开了 `Activity.activities`、`ActivityAuthorizationInfo` 与灵动岛 UI；
+    **发起 / 更新 / 结束活动**这一组（`Activity.request(attributes:content:pushType:)`、
+    `Activity.update`、Activity`end(_:dismissalPolicy:)`、`ActivityContent`）都是 **16.2** 才有。
+    按 16.1 写会得到一串
+    `'xxx' is only available in iOS 16.2 or newer`（本项目一次报了 7 个）。
+    **门槛要同时改四处**：`tool/patch_xcodeproj.py` 的 `DEPLOYMENT_TARGET`、
+    `tool/build_widget_extension.sh` 的 `MIN_IOS`、
+    Runner 侧 `@available` / `#available`、以及 Widget 扩展侧的 `@available`。
+25. ★★★ **`patch_xcodeproj.py` 的去重必须按「文件名」而不是「稳定 ID」。**
+    脚本用 md5 派生 ID（`C7A0F0…`），但历史上手工加过一批 ID 是手敲的（`C7A0E0…`）。
+    只比对 ID 的话，每次运行都会再插一份：
+      * 同一个 `.swift` 出现在 Compile Sources 两次 → 链接期 **duplicate symbol**；
+      * 同一张图标出现在 Copy Bundle Resources 两次 →
+        **Multiple commands produce '.../Runner.app/icon_xxx.png'**。
+    对策：先按文件名把旧条目**全部清掉**（`strip_managed_entries`），再用稳定 ID 重建。
+    这样无论旧 ID 是什么都能收敛，重复执行也不会叠加；脚本末尾还加了
+    「该文件名在构建阶段里应恰好出现 1 次」的显式校验。
+26. **Widget Extension 刻意不进 `Runner.xcodeproj`。** Flutter 生成的 pbxproj 里加一个
+    app-extension target 要改十几处（新 target + 依赖 + Embed App Extensions phase +
+    一堆构建设置），写错会把**主 App 的构建也弄坏**。
+    这里改成 `tool/build_widget_extension.sh` 用 `xcrun swiftc` 独立编译
+    （`-application-extension -parse-as-library`，arm64 + `MIN_IOS`），
+    再把 `.appex` 拷进 `Runner.app/PlugIns/` —— 等价于 Xcode 的 embed 阶段。
+    好处是扩展失败最多只是没有小组件，主 App 照常出包。
+    手工组装 `.appex` 时记得用 PlistBuddy 补 `MinimumOSVersion` 与
+    `CFBundleSupportedPlatforms`（Xcode 平时是打包时注入的）。
+27. **`WidgetBundleBuilder` 里不要用 `if #available` 做条件分支。**
+    结果构建器对条件分支的支持在不同 Xcode 版本上不一致（早期没有 `buildIf`，
+    直接编译失败）。正确做法：靠扩展自身的 `MinimumOSVersion` 拦版本，
+    然后在 bundle 里**无条件**列出所有 widget。
+28. **`ActivityAttributes` 里只能放「活动生命周期内不变」的东西。**
+    `attributes` 在 `Activity.request` 时就固定了，而音频时长往往是**播放开始之后**
+    才解析出来的。曾经想放一个 `hasDuration` 决定是否显示进度条 —— 那样会导致
+    进度条永远不出现。UI 一律直接看 `ContentState.durationMs > 0`。
+29. **App Group 拿不到时必须降级，不能白屏。** 桌面小组件与灵动岛封面都依赖
+    App Group（`group.com.cyshine.music`）共享数据，而**免费签名的描述文件不支持
+    App Groups 能力** —— 侧载用户大概率拿不到容器。
+    所以：`containerURL(forSecurityApplicationGroupIdentifier:)` 返回 nil 时，
+    桌面小组件显示引导态（「打开 App 播放点什么」），灵动岛封面回退到内置占位图。
+    **灵动岛本身不依赖 App Group**（歌名/歌手/进度/状态全在 `ContentState` 里随活动传递），
+    所以有没有能力都能用。
+30. **iOS 部署目标已提到 16.2**（见 #24）。代价是放弃 iOS 15 及更低设备。
+    取而代之的好处是：Runner 侧可以直接写 ActivityKit 而不用到处加 `@available` 守卫。
 
 ---
 
