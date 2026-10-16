@@ -91,8 +91,16 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
   /// 当成「实现了协议要求」，进而报出一串莫名其妙的错误。
   private func handleCall(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
     switch call.method {
+
     case "initialize":
-      engineQueue.async { self.complete(result) { self.initializeEngine() } }
+      engineQueue.async {
+        do {
+          let value = try self.initializeEngine()
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
+      }
 
     case "load":
       guard let args = call.arguments as? [String: Any],
@@ -100,54 +108,92 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
         result(FlutterError(code: "BASS_ARGUMENT", message: "uri is required", details: nil))
         return
       }
-      let headers = (args["headers"] as? [String: Any])?
-        .reduce(into: [String: String]()) { acc, entry in
-          acc[entry.key] = String(describing: entry.value)
-        } ?? [:]
+      var headers: [String: String] = [:]
+      if let raw = args["headers"] as? [String: Any] {
+        for (key, value) in raw { headers[key] = String(describing: value) }
+      }
       let formatHint = args["formatHint"] as? String
       engineQueue.async {
         self.loadGeneration += 1
         let generation = self.loadGeneration
-        self.complete(result) {
-          self.load(uri, headers: headers, formatHint: formatHint, generation: generation)
+        do {
+          let value = try self.load(uri, headers: headers, formatHint: formatHint,
+                                    generation: generation)
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
         }
       }
 
     case "play":
-      engineQueue.async { self.complete(result) { self.play() } }
+      engineQueue.async {
+        do {
+          let value = try self.play()
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
+      }
 
     case "pause":
-      engineQueue.async { self.complete(result) { self.pause() } }
+      engineQueue.async {
+        do {
+          let value = try self.pause()
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
+      }
 
     case "stop":
       engineQueue.async {
         self.loadGeneration += 1
-        self.complete(result) { self.stop() }
+        do {
+          let value = try self.stop()
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
       }
 
     case "seek":
       let positionMs = (call.arguments as? [String: Any])?["positionMs"] as? Int ?? 0
-      engineQueue.async { self.complete(result) { self.seek(positionMs) } }
+      engineQueue.async {
+        do {
+          let value = try self.seek(positionMs)
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
+      }
 
     case "setVolume":
       let volume = (call.arguments as? [String: Any])?["volume"] as? Double ?? 1.0
-      engineQueue.async { self.complete(result) { self.setVolume(Float(volume)) } }
+      engineQueue.async {
+        do {
+          let value = try self.setVolume(Float(volume))
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
+        }
+      }
 
     case "setEqualizer":
       let configuration = call.arguments as? [String: Any] ?? [:]
       engineQueue.async {
-        self.complete(result) {
-          self.setEqualizer(configuration)
+        do {
+          let value = try self.setEqualizer(configuration)
+          DispatchQueue.main.async { result(value) }
+        } catch {
+          DispatchQueue.main.async { result(BassPlayerPlugin.flutterError(error)) }
         }
       }
 
     case "dispose":
       engineQueue.async {
         self.loadGeneration += 1
-        self.complete(result) {
-          self.disposeEngine()
-          return [:]
-        }
+        self.disposeEngine()
+        DispatchQueue.main.async { result([String: Any?]()) }
       }
 
     default:
@@ -155,27 +201,23 @@ public final class BassPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandl
     }
   }
 
-  /// 与 Android 的 postResult 对齐：成功回 Map，失败回 BASS_<code> + {operation, bassCode}。
-  private func complete(_ result: @escaping FlutterResult,
-                        _ operation: () throws -> [String: Any?]) {
-    do {
-      let value = try operation()
-      DispatchQueue.main.async { result(value) }
-    } catch let failure as BassError {
-      DispatchQueue.main.async {
-        result(FlutterError(code: "BASS_\(failure.code)",
-                            message: failure.message,
-                            details: ["operation": failure.operation,
-                                      "bassCode": failure.code]))
-      }
-    } catch {
-      let code = Int(BASS_ErrorGetCode())
-      DispatchQueue.main.async {
-        result(FlutterError(code: "BASS_NATIVE",
-                            message: "\(error)",
-                            details: ["operation": "native", "bassCode": code]))
-      }
+  /// 与 Android 的 postResult 对齐：BassError -> "BASS_<code>" + {operation, bassCode}；
+  /// 其它错误 -> "BASS_NATIVE" + 当前 BASS_ErrorGetCode()。
+  ///
+  /// 刻意写成「调用点各自 do/catch」而不是「接 throwing 闭包的 helper」：
+  /// Swift 在 DispatchQueue.async 嵌套里会把 throwing 尾随闭包误判成非 throwing，
+  /// 报一串 "Call can throw, but it is not marked with 'try'"。
+  static func flutterError(_ error: Error) -> FlutterError {
+    if let failure = error as? BassError {
+      return FlutterError(code: "BASS_\(failure.code)",
+                          message: failure.message,
+                          details: ["operation": failure.operation,
+                                    "bassCode": failure.code])
     }
+    let code = Int(BASS_ErrorGetCode())
+    return FlutterError(code: "BASS_NATIVE",
+                        message: "\(error)",
+                        details: ["operation": "native", "bassCode": code])
   }
 
   // MARK: - EventChannel
