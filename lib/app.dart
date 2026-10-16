@@ -18,6 +18,7 @@ import 'core/storage/settings_store.dart';
 import 'core/sync/webdav_sync_controller.dart';
 import 'core/ui/app_toast.dart';
 import 'core/ui/car_display_layout.dart';
+import 'core/ui/scroll_to_top.dart';
 import 'features/downloads/download_history_store.dart';
 import 'core/music_sources/music_source_controller.dart';
 import 'features/music_sources/music_source_update_prompt.dart';
@@ -374,17 +375,22 @@ class _CyShineMusicAppState extends ConsumerState<CyShineMusicApp>
               darkTheme: darkTheme,
               routerConfig: appRouter,
               builder: (context, child) {
-                return CarDisplayViewport(
-                  enabled: settings.carDisplayEnabled,
-                  sizeFactor: settings.carDisplaySize,
-                  child: AppToastOverlay(
-                    child: MusicSourceUpdatePrompt(
-                      navigatorKey: rootNavigatorKey,
-                      ready: _sourceUpdatePromptsReady,
-                      child: StartupGate(
-                        skipStartupScreen: settings.skipStartupScreen,
-                        onReady: _onStartupReady,
-                        child: child ?? const SizedBox.shrink(),
+                // ScrollToTopScope 放在最外层：iOS 的「点状态栏回到顶部」由它接管，
+                // 原因见 lib/core/ui/scroll_to_top.dart 的说明（框架自带的实现
+                // 在 ShellRoute + indexedStack 结构下会被外壳 Scaffold 挡住）。
+                return ScrollToTopScope(
+                  child: CarDisplayViewport(
+                    enabled: settings.carDisplayEnabled,
+                    sizeFactor: settings.carDisplaySize,
+                    child: AppToastOverlay(
+                      child: MusicSourceUpdatePrompt(
+                        navigatorKey: rootNavigatorKey,
+                        ready: _sourceUpdatePromptsReady,
+                        child: StartupGate(
+                          skipStartupScreen: settings.skipStartupScreen,
+                          onReady: _onStartupReady,
+                          child: child ?? const SizedBox.shrink(),
+                        ),
                       ),
                     ),
                   ),
