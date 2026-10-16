@@ -16,22 +16,25 @@ MainActivity.kt 里。
 因为**通道契约保持不变**，所以移植策略是「换原生实现，不动 Dart」，极大降低与上游 rebase 的冲突面。
 
 **编译状态：已在 GitHub Actions（macos-latest）上完整跑通并产出未签名 IPA。**
-远程仓库 `chenweitian423/CyShineMusic-iOS` 分支 `ios`，第 6 次运行
-（run 38875635382）success。产物 11.9 MB，已核实内嵌
-`bass/bassflac/bassape/bassopus/basswv/bassdsd` 六个 BASS framework、
+远程仓库 `chenweitian423/CyShineMusic-iOS` 分支 `ios`，最新成功 run `38908158309`，
+产物 `ios-v2.0.1 (build 17)`，15,769,066 B，md5 `8b1d9f65107c1ccb518bf9f62a8235df`。
+已核实内嵌 `bass/bassflac/bassape/bassopus/basswv/bassdsd` 六个 BASS framework、
 `bass_player/music_source_runtime/music_home_widget` 三个插件 framework、
-`music_source_runtime.framework/music_source_preload.js`、15 个备用图标、
+`music_source_runtime.framework/music_source_preload.js`、
+`PlugIns/CyShineMusicWidget.appex`（灵动岛 + 桌面小组件）、
 `Info.plist`（`UIBackgroundModes=[audio,fetch]`、`CFBundleAlternateIcons` 5 项）。
 
-**真机已装并跑起来（2026-10-16，iPhone 自签安装）。** 已修的两个真机 bug：
+**真机已装并跑起来（2026-10-16，iPhone 自签安装），播放链路已通。** 已修的真机 bug：
 
 | # | 现象 | 根因 | 修复版本 |
 |---|---|---|---|
 | 1 | 导入音源报「音源初始化超时」 | 音源脚本执行顺序写反 + JSCore 异常被吞（见 #15/#16） | `v1.0.8-ios.2` |
 | 2 | 搜歌播放报 `BASS playback is available on Android only` | Dart 插件层遗留平台守卫（见 #20） | `v1.0.8-ios.3` |
 | 3 | 点状态栏不回顶 | 框架实现被外壳 Scaffold 挡住（见 #22） | `v1.0.8-ios.4` |
+| 4 | 灵动岛不显示 | ★ 通知授权从未请求过（上游是纯 Android 项目，见 #40）；另加诊断判据待复测 | `ios-v2.0.1` |
 
-**尚未验证**：音乐播放链路是否完整可用（检索 → 解析 → 播放 → 逐字歌词 → 锁屏控制）。
+**当前唯一卡点**：灵动岛待真机复测 `ios-v2.0.1`。排查入口是 App 内
+「设置 → 日志」页的 `live-activity` 一行（见 6.4 节第 4 条的字段表）。
 
 ---
 
@@ -287,6 +290,9 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | `lib/core/ui/scroll_to_top.dart`（新增） | 自接 `handleStatusBarTap()`，收集存活的 `ScrollPosition` 回顶 | 框架实现被外壳 Scaffold 挡住（第 8 节 #22） |
 | `lib/features/player/live_activity_service.dart`（新增） | 实时活动的 Dart 侧驱动 | 见 6.4 |
 | `lib/main.dart` / `lib/app.dart` | 初始化 LiveActivityService；iOS 上激活 `liveActivitySyncProvider`；接管 `openPlayer` | 见 6.4 |
+| `lib/core/services/native_log_bridge.dart`（新增） | 监听 `cy_shine_music/native_log`，写进 `AppLogger` | Release 包上 `NSLog` 不落 App 内日志页，真机排查是盲区（第 8 节 #31） |
+| `lib/main.dart` | `runApp` 前先 `NativeLogBridge.install()` | 越早装上，后面的原生失败才进得了日志页 |
+| `lib/core/services/app_logger.dart` | `logAndroidDiagnostics()` 内部按平台分流到 `ios-runtime` | **方法名沿用上游不动**（少一处 rebase 冲突），但原生 `app_task.diagnostics` 的 iOS 实现早就有，只是被 `Platform.isAndroid` 挡住了。放开后每次播放状态变化都会采一份机型/系统版本/通知开关/低电量（第 8 节 #40） |
 
 `dart analyze lib packages` 结果：**1 issue**，是上游既有的 `onReorder` 弃用提示，与本次改动无关。
 
@@ -295,9 +301,9 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | 优先级 | 事项 | 说明 |
 |---|---|---|
 | ~~P0~~ | ~~真机运行联调~~ | ✅ 已完成。真机已装上并跑起来；导入音源超时、搜歌播放、点状态栏不回顶三个 bug 已修 |
-| ~~P0~~ | ~~WidgetKit 卡片 UI + 灵动岛~~ | ✅ 代码已完成，见 6.4；但**真机仍不显示**，本轮加了诊断待复测 |
-| **P0** | **灵动岛真机复测**（当前卡点） | 本轮已做：原生失败回灌日志页、扩展 plist 补 `NSSupportsLiveActivities`、开关改成「播放时重试」、扩展版本对齐。复测时看日志页 `live-activity`：会写出「开关 / 活动数 / 扩展在不在 PlugIns / 发起失败原因」 | 
-| **P0** | **侧载能否支持扩展的定性** | 免费签名的侧载工具若不给 `.appex` 配 App ID 或重签时丢掉 `PlugIns/`，扩展根本加载不了 → 灵动岛与桌面小组件一起失效。**判据**：桌面长按 → 添加小组件 → 搜索「栖弦」。搜不到 = 扩展没加载，与代码无关（见第 8 节 #36） |
+| ~~P0~~ | ~~WidgetKit 卡片 UI + 灵动岛~~ | ✅ 代码已完成，见 6.4；**待真机复测 `ios-v2.0.1`** |
+| **P0** | **灵动岛真机复测**（当前卡点） | v2.0.1 已做：★ **补上从未请求过的通知授权**（最可能的根因，见第 8 节 #40）、诊断加 `机型`/`通知`/`Bundle` 三项判据、日志页放开 iOS 原生诊断。此前已做：失败回灌日志页、扩展 plist 补 `NSSupportsLiveActivities`、开关改成「播放时重试」、扩展版本对齐。**复测前先排除三个非代码原因**（见第 8 节 #37/#38/#42）：前台 App 不显示自己的实时活动、灵动岛是 iPhone 14 Pro+ 的硬件、侧载扩展要重启一次 iPhone |
+| **P0** | **侧载能否支持扩展的定性** | 免费签名的侧载工具若不给 `.appex` 配 App ID、重签时丢掉 `PlugIns/`、或只改主 App 的 bundle id 漏改扩展的（第 8 节 #41），扩展根本加载不了 → 灵动岛与桌面小组件一起失效，而主 App 一切正常。**判据**：桌面长按 → 添加小组件 → 搜索「栖弦」；以及日志页 `live-activity` 那行的 `扩展=` 与 `Bundle=` 两项 |
 | P1 | iOS 写 mp3 标签 | 现在对非 ISO-BMFF 格式**明确报错**（不写坏文件）。方案：引入 `pod 'ID3TagEditor', '~> 5.5'`（纯 Swift，支持 ID3 读写 + 内嵌图）或 TagLib |
 | P1 | ISO-BMFF（m4a）标签写入 | `CyShineNativeTaggerChannel.writeTags` 里留了分支，需接 `AVAssetExportSession` 元数据重写 |
 | P2 | App Group entitlement（桌面小组件的真实数据） | `group.com.cyshine.music` 需要**付费账号**的 App Groups 能力；免费签名拿不到，小组件会停在引导态（已降级，不白屏）。灵动岛不受影响 |
@@ -349,6 +355,22 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
    URL 由 `AppDelegate` / `SceneDelegate` 接住 → `CyShineIncomingAudio.handleAppURL`
    → 桥接 `handleIncomingURL` → 回灌 `control` 给 Dart。
 3. **桌面小组件降级到引导态而不是白屏**（见第 8 节 #29）。
+4. **一切「为什么没显示」都写进一条诊断。** `CyShineLiveActivityBridge.diagnostics()`
+   在 `isSupported` / 发起失败 / 每次播放状态变化时经 `cy_shine_music/native_log`
+   回灌到 App 内「日志」页（`live-activity` 标签），一行里包含：
+
+   | 字段 | 判什么 |
+   |---|---|
+   | `iOS <版本>` | 低于 16.2 直接没有实时活动 API |
+   | `机型=iPhone15,3(灵动岛机型)` | 灵动岛只存在于 iPhone 14 Pro 及以上；刘海屏机型只在锁屏显示 |
+   | `开关=true/false` | `ActivityAuthorizationInfo().areActivitiesEnabled`，用户在设置里关掉了 |
+   | `通知=已授权/未询问/被拒绝` | 见第 8 节 #40 —— 未询问 = 实时活动不会显示 |
+   | `在跑的活动=N` | 活动有没有真的建起来 |
+   | `扩展=在/缺失,二进制在/缺失` | 侧载工具把 `PlugIns/` 丢了吗（#36） |
+   | `Bundle=a/b ⚠前缀不匹配` | 重签漏改扩展 id（#41） |
+   | `AppGroup=可用/不可用` | 封面来源；不可用则占位图 |
+
+   用户只要截这一行，几乎就能直接定性，不用在真机上来回猜。
 
 ---
 
@@ -396,6 +418,22 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 | IPA 内 `Info.plist` | 另含 `NSSupportsLiveActivities=true`、`CFBundleURLTypes` 里有 `cyshinemusic` |
 | `MinimumOSVersion`（App 与 appex） | 两边都是 16.2 |
 | `CFBundleShortVersionString` / `CFBundleVersion`（App 与 appex） | 两边一致；version 来自 `tool/ios_version.txt`，build 来自 CI run number |
+| 主 App 与扩展的 `CFBundleIdentifier` 前缀 | 扩展 id 必须以主 App id 为前缀（`com.cyshine.music.widget` ⊃ `com.cyshine.music`）。**侧载重签后这一条可能失效**，见第 8 节 #41 |
+
+最近一次实测（`ios-v2.0.1` / build 17，15,769,066 B，md5 `8b1d9f65107c1ccb518bf9f62a8235df`）：
+上面每一项都通过 —— 主 App `com.cyshine.music` 2.0.1/17、扩展 `com.cyshine.music.widget`
+2.0.1/17、`MinimumOSVersion` 都是 16.2、两侧 `NSSupportsLiveActivities=true`、
+5 个备用图标都在 `CFBundleAlternateIcons`、扩展二进制在 `PlugIns/`。
+
+Windows 上用 Python 就能核对（`zipfile` + `plistlib`，注意给 **Windows 路径**，
+Git Bash 的 `/tmp/...` Python 认不了）：
+
+```python
+import zipfile, plistlib
+z = zipfile.ZipFile(r'F:\codex项目\音乐源播放器\dist\CyShineMusic-unsigned.ipa')
+p = plistlib.loads(z.read('Payload/Runner.app/Info.plist'))
+q = plistlib.loads(z.read('Payload/Runner.app/PlugIns/CyShineMusicWidget.appex/Info.plist'))
+```
 
 ---
 
@@ -589,6 +627,30 @@ BASS 二进制**不入库**（官方再分发限制），由 `tool/fetch_bass_io
 39. **锁屏要显示实时活动，还要一个单独的开关**：
     设置 → 面容 ID 与密码 → 锁定时允许访问 → 实时活动。
     只打开「设置 → 栖弦 → 实时活动」时，锁屏可能仍然不显示。
+40. ★★★ **实时活动要显示，App 必须先有通知授权 —— 而上游从来没请求过。**
+    iOS 17 起，「实时活动」的开关就挂在 App 的通知设置里（设置 → 栖弦 → 通知 → 实时活动）。
+    上游是**纯 Android 项目**，`MainActivity.kt` 里没有任何
+    `UNUserNotificationCenter.requestAuthorization` 的等价物（Android 8+ 走的是
+    通知渠道，不需要运行时授权）。于是 iOS 侧装包后 `UNAuthorizationStatus`
+    一直是 `notDetermined` —— **这是「灵动岛怎么都不出现」的高概率根因**，
+    而它不报任何错：`Activity.request` 可能成功，`ActivityAuthorizationInfo().areActivitiesEnabled`
+    也可能返回 `true`，就是屏幕上什么都没有。
+
+    修法（`CyShineLiveActivityBridge.ensureNotificationAuthorization()`）：
+    在**首次发起活动（= 首次播放）**时请求一次 `[.alert, .sound, .badge]`。
+    刻意**不放冷启动** —— 一打开 App 就弹权限框体验很差；
+    也刻意**不做成同步阻塞** —— 授权弹窗是异步的，首次 `Activity.request`
+    照常发起，失败也没关系（Dart 侧 `_activeStarted` 仍是 false，下一次状态变化会重试）。
+41. ★★ **侧载重签后要核对主 App 与扩展的 bundle id 前缀。** 重签工具
+    （爱思 / AltStore / SideStore / 各种 `codesign` 脚本）常常只把主 App 的
+    `CFBundleIdentifier` 换成自己的，`.appex` 里的 id 没跟着改。
+    iOS 要求扩展 id 必须以主 App id 为前缀，不匹配就**直接拒绝加载扩展** ——
+    症状是「灵动岛不显示 + 桌面搜不到小组件」，**而主 App 一切正常、没有任何报错**。
+    诊断里的 `Bundle=<主 App id>/<扩展 id>` 就是给这个用的，不匹配会带
+    `⚠前缀不匹配`。另外免费个人签名的 **wildcard App ID 本身就不支持 App Extensions**，
+    所以侧载场景下扩展失效是常态，不是代码 bug。
+42. **装完包重启一次 iPhone。** 侧载安装的 app 扩展需要 PlugInKit 扫描注册，
+    冷启动一次系统不一定立刻认。重启后桌面「+」里才搜得到「栖弦」。
 
 ---
 
@@ -689,9 +751,28 @@ assets/app_icons/classic.png        1024x1024，唯一源文件（正方形、�
 | `CFBundleShortVersionString` | `tool/ios_version.txt`（**唯一来源**，手工维护） | iOS 从 `2.0.0` 起独立编号，不再跟上游 Android 的 `1.0.8` |
 | `CFBundleVersion` | CI 的 `github.run_number` | 自动单调递增，每次出包都不同；不用管 |
 | Widget 扩展的两个版本 | `IOS_BUILD_NAME` / `IOS_BUILD_NUMBER` 环境变量 | **必须与主 App 一致**，否则 iOS 拒绝加载扩展（见第 8 节 #33） |
-| Release tag | `ios-v<CFBundleShortVersionString>` | 例：`ios-v2.0.0`；标题里带 build number |
+| Release tag | `ios-v<CFBundleShortVersionString>` | 例：`ios-v2.0.1`；标题里带 build number |
 | 本地出包 | `--build-name=$(cat tool/ios_version.txt) --build-number=<任意递增数>` | 见 `ios/README-IOS.md` 3.1 |
 
 发版时只需改 `tool/ios_version.txt` 一个地方。
 CI 有一步 `Resolve iOS version` 会校验内容必须是 `x` / `x.y` / `x.y.z`，
 写错直接失败，不会产出「版本号为空」的包。
+
+**注意：Release 是手动发的。** `ios-build.yml` 只负责出包 + 上传 artifact，
+发 Release 使用的是（`.github/workflows/release.yml` 是上游的 Android 流程，已停用自动触发）：
+
+```bash
+cd CyShineMusic-iOS
+gh run download -R chenweitian423/CyShineMusic-iOS <run_id> \
+  -n CyShineMusic-unsigned-ipa -D <临时目录>
+cp <临时目录>/CyShineMusic-unsigned.ipa ../dist/
+cd .. && md5sum dist/CyShineMusic-unsigned.ipa     # 记下大小与 md5
+gh release create -R chenweitian423/CyShineMusic-iOS ios-v<版本> \
+  --title "栖弦 iOS v<版本> (build <n>) · <一句话>" --latest \
+  -F - dist/CyShineMusic-unsigned.ipa <<'EOF'
+...发版说明...
+EOF
+```
+
+上传前建议先自解压核对（见 7.3）：主 App 与扩展的 `CFBundleShortVersionString`
+**和** `CFBundleVersion` 都必须一致、扩展 id 必须是主 App id 的前缀。
