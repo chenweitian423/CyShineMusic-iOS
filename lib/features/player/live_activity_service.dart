@@ -65,8 +65,11 @@ class LiveActivityService {
   /// 「设置 → 栖弦 → 实时活动」打开开关 —— 只在启动时检查一次的话，
   /// 就得重启 App 才生效，表现成「灵动岛怎么都不出现」。
   /// 每次播放状态变化都会重试一次，代价只是一次轻量通道调用。
-  Future<void> _ensureAvailable() async {
-    if (!Platform.isIOS || _available || _checking) return;
+  ///
+  /// [force] 用于「通知授权刚被回答」这种外部状态变化的场景：
+  /// 之前拿到过 false 而放弃了，必须强制重新判定一次。
+  Future<void> _ensureAvailable({bool force = false}) async {
+    if (!Platform.isIOS || (_available && !force) || _checking) return;
     _checking = true;
     try {
       final supported =
@@ -76,6 +79,7 @@ class LiveActivityService {
           'live-activity',
           '系统未开启实时活动（设置 → 栖弦 → 实时活动），暂不推送；开关打开后无需重启即可生效',
         );
+        _available = false;
         return;
       }
       _available = true;
@@ -105,7 +109,7 @@ class LiveActivityService {
 
   // MARK: - 原生回调
 
-  Future<dynamic> _handleNativeCall(MethodCall call) async {
+Future<dynamic> _handleNativeCall(MethodCall call) async {
     switch (call.method) {
       case 'control':
         final action = call.arguments as String? ?? '';
@@ -113,11 +117,23 @@ class LiveActivityService {
         _queue = _queue
             .then((_) => _control(action))
             .catchError((Object error) async {
-              await AppLogger.write('live-activity', 'control 失败: $error');
-            });
+          await AppLogger.write('live-activity', 'control 失败: $error');
+        });
         return true;
       case 'openPlayer':
         await onOpenPlayer?.call();
+        return true;
+      case 'authorizationResolved':
+        // 原生的通知授权弹窗刚被回答。此刻 areActivitiesEnabled 才翻成 true，
+        // 立刻重新判定一次并把当前曲目推上去 —— 否则要等下一次播放状态变化
+        // 才恢复，表现为「授权完了还是没反应，再播一次才有」。
+        await _ensureAvailable(force: true);
+        final state = _ref.read(playerControllerProvider);
+        if (state.track != null) {
+          _activeStarted = false;
+          _lastSignature = null;
+          await _push(afterArtwork: true);
+        }
         return true;
     }
     throw MissingPluginException('未知的实时活动方法: ${call.method}');

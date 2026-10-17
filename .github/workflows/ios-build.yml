@@ -75,6 +75,12 @@ jobs:
       - name: Verify preload protocol & call order
         run: node tool/verify_preload_protocol.mjs
 
+      # 实时活动的授权链路曾经死锁过一次（ios-v2.0.1：灵动岛永远不出现）。
+      # 根因是「问通知权限」只写在 start 里，而 Dart 在 isSupported 为 false 时
+      # 压根不会调 start。这条检查把该约束变成硬校验。
+      - name: Verify live activity authorization chain
+        run: node tool/verify_live_activity_auth.mjs
+
       - name: Prepare iOS alternate icons
         run: bash tool/fetch_app_icons.sh
 

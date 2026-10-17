@@ -60,6 +60,11 @@ final class CyShineLiveActivityBridge: NSObject {
     instance.observeForeground()
     // 先把通知授权状态查一遍存起来，诊断里就能直接看到"通知=?"
     Self.refreshNotificationStatus()
+    // 通知授权弹窗被回答后主动叫 Dart 重试 —— 否则 Dart 可能已经拿着
+    // areActivitiesEnabled=false 放弃了推送，要等下一次播放才恢复。
+    Self.onAuthorizationResolved = { [weak instance] in
+      instance?.channel?.invokeMethod("authorizationResolved", arguments: nil)
+    }
     // 保持存活：通道回调是 weak 的，所以这里让 AppDelegate 侧持有
     shared = instance
   }
@@ -87,22 +92,39 @@ final class CyShineLiveActivityBridge: NSObject {
       // 顺手把一次性的诊断信息打到 App 内「日志」页。
       // 灵动岛不出现时，用户只要截一张日志就能判断是「开关关了」还是
       // 「扩展根本没打进包」还是「系统拒绝了发起」，不用来回猜。
+      //
+      // ★ 这里必须**先问通知授权**，否则整个功能进死锁（详见 ensureNotificationAuthorization）：
+      //   iOS 17 起「实时活动」开关挂在通知授权上，通知处于 notDetermined 时
+      //   areActivitiesEnabled 返回 false。若据此如实回false，Dart 就永远不会
+      //   调用 start，而「问权限」的代码只写在 start 里 —— 两边互等，永不发起。
+      Self.ensureNotificationAuthorization()
       CyShineNativeLog.write("live-activity", Self.diagnostics())
-      result(ActivityAuthorizationInfo().areActivitiesEnabled)
+      let enabled = ActivityAuthorizationInfo().areActivitiesEnabled
+      if !enabled && Self.isNotificationAuthorizationPending {
+        // 弹窗已弹、用户还没回答：这不是「用户拒绝」。先按可用放行，
+        // 让 Dart 挂上监听；授权结果回来后由 onAuthorizationResolved 主动重试。
+        result(true)
+      } else {
+        result(enabled)
+      }
 
     case "start":
       guard let args = call.arguments as? [String: Any] else {
         result(FlutterError(code: "INVALID_ARGS", message: "缺少参数", details: nil))
         return
       }
-      if ActivityAuthorizationInfo().areActivitiesEnabled == false {
-        // 用户在「设置 → 栖弦 → 实时活动」里关掉了；不是错误，只是不支持。
+      // 兜底再问一次（幂等）。正常路径下 isSupported 已经问过。
+      Self.ensureNotificationAuthorization()
+      // 用户在「设置 → 栖弦 → 实时活动」里真的关掉了：不是错误，不要回灌
+      // FlutterError —— Dart 会把它写进日志，看起来像故障。
+      // 注意这里**不能**把「还没问」也归到这个分支（那正是死锁的成因）。
+      if ActivityAuthorizationInfo().areActivitiesEnabled == false,
+         Self.isNotificationAuthorizationPending == false {
+        CyShineNativeLog.write("live-activity",
+                               "系统实时活动开关关闭，跳过发起（通知=\(Self.notificationStatus)）")
         result(false)
         return
       }
-      // 实时活动的显示依赖通知授权，而上游是纯 Android 项目、从没问过这个权限。
-      // 在首次发起活动（= 首次播放）时问一次，别在冷启动就弹窗打扰。
-      Self.ensureNotificationAuthorization()
       if UIApplication.shared.applicationState == .active {
         applyStart(args, result: result)
       } else {
@@ -134,6 +156,18 @@ final class CyShineLiveActivityBridge: NSObject {
   /// 而诊断常常在同步路径上被读，所以这里缓存一份，不阻塞主线程。
   private static var notificationStatus = "未查询"
   private static var didRequestNotificationAuthorization = false
+
+  /// 权限弹窗已经弹出、但用户还没回答。
+  ///
+  /// ★ 这个状态必须和「用户拒绝」区分开：iOS 17 起 `areActivitiesEnabled`
+  /// 在通知未询问时也返回 false，两者从这一位上无法分辨。如果把「还没问」
+  /// 当成「用户拒绝」回给 Dart，Dart 就永远不调 start、也就永远问不到权限 ——
+  /// 上一版把 `ensureNotificationAuthorization()` 放在 start 里就是这么死的。
+  private static var isNotificationAuthorizationPending = false
+
+  /// 授权结果落地后回调，触发 Dart 侧重试。
+  /// 由 `isSupported` 挂上，避免 Dart 先于原生拿到结论。
+  static var onAuthorizationResolved: (() -> Void)?
 
   /// 灵动岛是 iPhone 14 Pro 及以上的硬件。刘海屏机型（含 14/15/16 非 Pro）
   /// 的实时活动只出现在锁屏与通知中心 —— 这不是 bug，是硬件差异。
@@ -189,20 +223,44 @@ final class CyShineLiveActivityBridge: NSObject {
 
   /// ★ 实时活动要显示，App 必须有通知授权（iOS 17 起「实时活动」开关就挂在
   ///   App 的通知设置里）。上游是纯 Android 项目，从来没有请求过这个权限，
-  ///   侧载后授权状态一直是 notDetermined —— 这是「灵动岛怎么都不出现」的
-  ///   高概率根因。放在首次发起活动（= 首次播放）时问一次，不打扰冷启动。
+  ///   侧载后授权状态一直是 notDetermined —— 而此时 `areActivitiesEnabled`
+  ///   返回 false，于是「不支持 → 不询问 → 永远不支持」成了死锁。
+  ///
+  ///   ★ 因此这个方法必须从 `isSupported` 就能调到（那条路径一定被执行），
+  ///     **不能只写在 `start` 里** —— Dart 在 `isSupported` 为 false 时
+  ///     压根不会调 start，权限就永远问不到。这正是上一版失效的原因。
+  ///
+  ///   幂等：只在第一次真正发起请求。放在首次 `isSupported`（= App 启动后
+  ///   首次进入播放器）时问一次，不在冷启动就弹窗。
   static func ensureNotificationAuthorization() {
     guard didRequestNotificationAuthorization == false else { return }
     didRequestNotificationAuthorization = true
+    isNotificationAuthorizationPending = true
     UNUserNotificationCenter.current().requestAuthorization(
       options: [.alert, .sound, .badge]
     ) { granted, error in
+      Self.isNotificationAuthorizationPending = false
       Self.notificationStatus = granted ? "已授权" : "被拒绝"
       CyShineNativeLog.write(
         "live-activity",
         "通知授权结果 granted=\(granted) error=\(error?.localizedDescription ?? "无")"
       )
       Self.refreshNotificationStatus()
+      // ★ 授权刚落地时 areActivitiesEnabled 才会翻成 true。此刻 Dart 那边
+      //   可能已经因为拿到 false 而放弃了，必须主动叫它重试一次。
+      let deliver = {
+        let info = ActivityAuthorizationInfo()
+        CyShineNativeLog.write(
+          "live-activity",
+          "授权后复查：开关=\(info.areActivitiesEnabled) | \(Self.diagnostics())"
+        )
+        Self.onAuthorizationResolved?()
+      }
+      if Thread.isMainThread {
+        deliver()
+      } else {
+        DispatchQueue.main.async(execute: deliver)
+      }
     }
   }
 
