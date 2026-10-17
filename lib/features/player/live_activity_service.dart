@@ -64,7 +64,7 @@ class LiveActivityService {
   /// 刻意做成可以反复调用：用户可能先播放、才想起来去
   /// 「设置 → 栖弦 → 实时活动」打开开关 —— 只在启动时检查一次的话，
   /// 就得重启 App 才生效，表现成「灵动岛怎么都不出现」。
-  /// 每次播放状态变化都会重试一次，代价只是一次轻量通道调用。
+/// 每次播放状态变化都会重试一次，代价只是一次轻量通道调用。
   ///
   /// [force] 用于「通知授权刚被回答」这种外部状态变化的场景：
   /// 之前拿到过 false 而放弃了，必须强制重新判定一次。
@@ -117,8 +117,8 @@ Future<dynamic> _handleNativeCall(MethodCall call) async {
         _queue = _queue
             .then((_) => _control(action))
             .catchError((Object error) async {
-          await AppLogger.write('live-activity', 'control 失败: $error');
-        });
+              await AppLogger.write('live-activity', 'control 失败: $error');
+            });
         return true;
       case 'openPlayer':
         await onOpenPlayer?.call();
