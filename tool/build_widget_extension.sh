@@ -90,12 +90,17 @@ cp "$SRC/Info.plist" "$APPEX/Info.plist"
 #   但这里是手工组装 .appex，没人会替我们补。**缺失时 iOS 可能直接不加载扩展**
 #   —— 桌面小组件搜不到、灵动岛不出现，而主 App 完全正常、一条报错都没有。
 #   已实测过我们 2.0.2 的包里 appex 就是缺这个键。
+#
+#   ⚠ Info.plist 里已经写死了 [1,2]，所以这里**只在缺失时补写**。
+#   之前写成无条件 Add，结果拼成了 [1,2,1,2]（2.0.3 就这样出的包）。
 if ! /usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" "$APPEX/Info.plist" >/dev/null 2>&1; then
-  echo "      (补写 UIDeviceFamily —— 缺失会导致扩展不被加载)"
+  echo "      (Info.plist 未声明 UIDeviceFamily，就地补写 [1,2])"
+  /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APPEX/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APPEX/Info.plist"
+  /usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:1 integer 2" "$APPEX/Info.plist"
+else
+  echo "      UIDeviceFamily 由 Info.plist 提供：$(/usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" "$APPEX/Info.plist" | tr '\n' ' ')"
 fi
-/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APPEX/Info.plist" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APPEX/Info.plist" 2>/dev/null || true
-/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:1 integer 2" "$APPEX/Info.plist" 2>/dev/null || true
 
 if [ -n "${IOS_BUILD_NAME:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $IOS_BUILD_NAME" "$APPEX/Info.plist"

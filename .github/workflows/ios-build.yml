@@ -183,8 +183,14 @@ jobs:
           grep -q "UIDeviceFamily" \
             "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
             || { echo "::error::扩展 Info.plist 缺少 UIDeviceFamily（会导致扩展不被加载）"; exit 1; }
+          #必须恰好是 [1, 2]。构建脚本曾把它无条件Add 拼成 [1,2,1,2]，
+          # 所以这里校验条目数而不是只校验「键存在」。
+          FAM_COUNT=$(/usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" | grep -c '^[[:space:]]*[0-9]' || true)
           echo "扩展 UIDeviceFamily: $(/usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" \
-            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" | tr '\n' ' ')"
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" | tr '\n' ' ')（$FAM_COUNT 项）"
+          test "$FAM_COUNT" = "2" \
+            || { echo "::error::扩展 UIDeviceFamily 应恰好 2 项(1,2)，实际 $FAM_COUNT 项"; exit 1; }
           APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
           EXT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
             "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist")
