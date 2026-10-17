@@ -808,6 +808,87 @@ EOF
 
 ## 12. 轮次汇总
 
+### 第 11 轮（`2.0.3`，提交 `080edba`）：锁屏卡片 ≠ 灵动岛
+
+**这一轮最大的价值是纠正了诊断方向。** 用户发来趣听音乐的两张截图，
+其中图 2 被当成了「灵动岛长什么样」的参考 —— 但它不是。
+
+#### 图 2 到底是什么
+
+| 图 | 实际是什么 | 需要什么才能实现 |
+|---|---|---|
+| 图 1 | App 内播放页 | 纯 Flutter UI |
+| 图 2 | **iOS 锁屏系统播放卡片**（Now Playing widget） | `audio_service` → `MPNowPlayingInfoCenter`。**系统自己画**，不需要 ActivityKit / Widget 扩展 / App Groups |
+
+**判别特征**：卡片里有进度条、上一首/下一首按钮、AirPlay 路由图标
+⇒ 这是 `MPNowPlayingInfoCenter`。Live Activity 的锁屏卡片不长这样。
+
+这与第 10 轮的发现完全一致：趣听 IPA 里 `ActivityKit`/`DynamicIsland`
+符号**各 0 次** —— 它没做灵动岛，它给的是系统卡片。
+
+**用户确认的两个事实**（决定了这一轮做什么）：
+1. **锁屏上完全没有卡片** ⇒ 锁屏链路也是坏的，此前从未验证过
+2. **通知授权弹窗出现了、点了「允许」** ⇒ 第 10 轮的死锁修复生效
+
+#### bug 1：锁屏封面必须是本地文件
+
+`audio_service-0.18.19` 的 darwin 实现，`AudioServicePlugin.m` 的 `setMediaItem`：
+
+```objc
+NSString* artUri = mediaItem[@"artUri"];
+artwork = nil;
+if (![artUri isEqual: [NSNull null]]) {
+    NSString* artCacheFilePath = extras[@"artCacheFile"];   // ← 只认本地路径
+    UIImage* artImage = [UIImage imageWithContentsOfFile:artCacheFilePath];
+    if (artImage != nil) { artwork = [[MPMediaItemArtwork alloc] initWithImage:artImage]; }
+}
+```
+
+**只要 `extras['artCacheFile']` 不存在，`artwork` 就是 nil，不报任何错。**
+而我们此前的封面优先级是「内嵌 bytes → 网络 URL」，
+在线音源（绝大多数场景）走的正是网络 URL 分支 ⇒ 锁屏卡片永远没缩略图。
+
+修法：`cacheArtwork(bytes, {fallbackUrl})` 在没有内嵌 bytes 时自己下载并落盘，
+返回本地 `file://` Uri。附带：
+- 校验魔数（PNG/JPEG/GIF/WebP），防止把错误页 HTML 存成封面
+- 8 MB 响应上限（`consolidateHttpClientResponseBytes` 在 `package:http` 里，
+  为一张封面多引一个包不值得，自己按块收集）
+- 日志里 URL 去掉 query，避免把带签名的地址整条写进日志
+
+#### bug 2：手工组装的 appex 缺 UIDeviceFamily
+
+实测 `2.0.2` 产物：
+
+| bundle | `UIDeviceFamily` |
+|---|---|
+| `Runner.app` | `[1, 2]` |
+| `CyShineMusicWidget.appex` | **缺失** |
+
+Xcode 在真正 build extension target 时会自动注入这个键；我们是
+`xcrun swiftc` 手工组装 `.appex`，**没人替我们补**。
+缺失时 iOS 可能直接不加载扩展 ⇒ 灵动岛 + 桌面小组件一起消失，
+而主 App 一切正常、控制台也没有任何报错。
+
+修法：Info.plist 写死 + `build_widget_extension.sh` 兜底补写 + CI 硬校验。
+
+#### 新增诊断：`app_task.mediaSession`
+
+```
+后台音频=已声明 会话分类=playback 会话活动=独占
+nowPlaying=有9项 标题=有 歌手=有 速率=1.0 封面=有
+```
+
+`nowPlaying=空⚠` / `封面=无⚠` / `后台音频=未声明⚠` 三种判据一眼可辨。
+在 `AppLifecycleState.paused/resumed` 时采一次 → 日志页 `media-session` 标签。
+
+#### 方法论：怎么判断「这是 Now Playing 还是 Live Activity」
+
+| 现象 | 结论 |
+|---|---|
+| 锁屏卡片有进度条 + 上下首 + AirPlay | `MPNowPlayingInfoCenter`（Now Playing），查 `audio_service` |
+| 锁屏顶部/灵动岛位置的独立卡片，无上下首 | Live Activity，查 ActivityKit + 扩展加载 |
+| 桌面长按能加小组件 | 扩展已被加载 |
+
 ### 第 10 轮（`2.0.2`，提交 `d46dcb4`）：灵动岛授权死锁
 
 **这一轮推翻了第 9 轮的结论。** 第 9 轮把「没请求通知授权」记成「高概率根因」，
