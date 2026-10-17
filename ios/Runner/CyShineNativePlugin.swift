@@ -174,7 +174,7 @@ final class CyShineAppIconChannel {
       return
     }
     let name = candidates[index]
-    apply(name, code: code) { [weak self] error in
+    apply(name, code: code, attempt: 0) { [weak self] error in
       guard let self else { return }
       if let error {
         self.applyFirstWorking(candidates,
@@ -189,9 +189,28 @@ final class CyShineAppIconChannel {
     }
   }
 
+  /// ★ LaunchServices 的 `-54`（`"process may not map database"`）是 iOS 上
+  ///   换图标最常见的失败，而且**与打包是否正确无关**。
+  ///
+  ///   成因：`setAlternateIconName` 要让 LaunchServices 改写图标数据库，
+  ///   而这个写操作有互斥与「正在忙」的窗口。连着快速点两下、或上一次切换
+  ///   还没落盘就再切，就会撞上它。典型症状是**系统弹了「图标已更改」的提示
+  ///   但图标没变**，或者图标变成空白占位。
+  ///
+  ///   所以这里的处理是：**串行化 + 退避重试**，而不是当成致命错误。
+  ///   连着几轮都失败才回错误给 Dart。
+  private static let launchServicesBusyCode = -54
+  private static let maxApplyAttempts = 3
+
+  /// 正在进行的切换。系统不允许并发调用，必须排队。
+  private var iconChangeInFlight = false
+  /// 排队中的请求（取最后一次 —— 用户连点时中间那几次没有意义）。
+  private var pendingIconRequest: ((FlutterResult) -> Void)?
+
   /// 真正调用系统 API。completion 拿到 nil 表示成功。
   private func apply(_ name: String?,
                      code: String,
+                     attempt: Int,
                      result: @escaping (Error?) -> Void) {
     guard UIApplication.shared.supportsAlternateIcons else {
       // 这一条最常被忽略：系统直接告诉你不支持，报错信息也不会有别的线索。
@@ -206,9 +225,48 @@ final class CyShineAppIconChannel {
       }
       return
     }
-    DispatchQueue.main.async {
-      UIApplication.shared.setAlternateIconName(name) { error in
-        DispatchQueue.main.async { result(error) }
+
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      // 串行化：上一次没落盘就再切，必然撞 -54。
+      if self.iconChangeInFlight {
+        self.pendingIconRequest = result
+        CyShineNativeLog.write("app-icon", "上一次切换尚未结束，本次请求排队（当前=\(code)）")
+        return
+      }
+      self.iconChangeInFlight = true
+      UIApplication.shared.setAlternateIconName(name) { [weak self] error in
+        DispatchQueue.main.async {
+          guard let self else { return }
+          // -54 是 LaunchServices 暂时忙，退避后重试而不是直接失败。
+          let ns = error as NSError?
+          if ns?.domain == "NSOSStatusErrorDomain",
+             ns?.code == Self.launchServicesBusyCode,
+             attempt + 1 < Self.maxApplyAttempts {
+            self.iconChangeInFlight = false
+            let delay = DispatchTimeInterval.milliseconds(350 * (attempt + 1))
+            CyShineNativeLog.write(
+              "app-icon",
+              "LaunchServices 忙(-54)，\(delay.milliseconds ?? 0)ms 后重试 "
+                + "第 \(attempt + 2)/\(Self.maxApplyAttempts) 次（当前=\(code)）")
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+              self.apply(name, code: code, attempt: attempt + 1, result: result)
+            }
+            return
+          }
+          self.iconChangeInFlight = false
+          if let error {
+            CyShineNativeLog.write(
+              "app-icon",
+              "切换 \(code) -> \(name ?? "主图标") 失败：\(Self.describe(error))")
+          }
+          // 排队的请求现在可以跑了。
+          if let queued = self.pendingIconRequest {
+            self.pendingIconRequest = nil
+            queued(nil)
+          }
+          result(error)
+        }
       }
     }
   }
