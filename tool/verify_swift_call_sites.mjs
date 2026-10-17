@@ -5,9 +5,11 @@
 // 给私有方法加了参数，却漏改了某个调用点，CI 报
 // `Missing argument for parameter 'x'`。第 12 轮就为此白跑了一次构建。
 //
-// 检查两类问题：
+// 检查三类问题：
 //   1. 私有方法的调用点是否提供了全部必填形参（支持位置传参与尾随闭包）
 //   2. 文件里是否混进了 U+FFFD 乱码字符
+//   3. 常见易错的静态构造器用法（`DispatchTimeInterval.milliseconds` 是
+//      `static func`，不是可当属性读的 `.milliseconds` 实例成员）
 //
 // 用法：node tool/verify_swift_call_sites.mjs
 
@@ -82,6 +84,31 @@ for (const file of files) {
   }
   const src = stripNoise(raw);
   stats.files++;
+
+  // 1b) 易错的静态构造器：`.milliseconds` / `.seconds` 只能被**调用**，
+  //     不能当属性读（`delay.milliseconds` 会报
+  //     "Enum case 'milliseconds' cannot be used as an instance member"）。
+  //     这些都是 `static func`，正确写法是 `Type.milliseconds(x)`。
+  for (const enumType of ['DispatchTimeInterval']) {
+    const badRe = new RegExp(
+      `(?<![\\w.])([A-Za-z_][\\w.]*)\\s*\\.\\s*(milliseconds|seconds|never)\\b(?!\\s*\\()`,
+      'g',
+    );
+    let em;
+    while ((em = badRe.exec(src)) !== null) {
+      const receiver = em[1];
+      const member = em[2];
+      const line = src.slice(0, em.index).split('\n').length;
+      // 接收者就是枚举类型本身时，那是合法的类型上下文调用。
+      if (receiver === enumType) continue;
+      // 形如 `let delay = DispatchTimeInterval.milliseconds(...)` 后再读
+      // `delay.milliseconds` 才是不合法的 —— 这里已经排除了类型名。
+      failures.push(
+        `${file}:${line} ${receiver}.${member} 像是在把静态构造器当属性读`
+        + ` —— ${enumType}.${member} 是 static func，正确写法是 ${enumType}.${member}(...)`,
+      );
+    }
+  }
 
   // 1) 收集 private func 的声明（含形参与默认值信息）
   const declRe = /private\s+(?:static\s+)?func\s+([A-Za-z_]\w*)\s*\(/g;

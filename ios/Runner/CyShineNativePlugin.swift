@@ -250,12 +250,16 @@ final class CyShineAppIconChannel {
              ns?.code == Self.launchServicesBusyCode,
              attempt + 1 < Self.maxApplyAttempts {
             self.iconChangeInFlight = false
-            let delay = DispatchTimeInterval.milliseconds(350 * (attempt + 1))
+            // 350 / 700ms 递增退避。`DispatchTimeInterval.milliseconds(_:)` 是
+            // 静态构造器（不是 `.milliseconds` 这种实例成员），别写成后者。
+            let delayMs = 350 * (attempt + 1)
             CyShineNativeLog.write(
               "app-icon",
-              "LaunchServices 忙(-54)，\(delay.milliseconds ?? 0)ms 后重试 "
+              "LaunchServices 忙(-54)，\(delayMs)ms 后重试 "
                 + "第 \(attempt + 2)/\(Self.maxApplyAttempts) 次（当前=\(code)）")
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            DispatchQueue.main.asyncAfter(
+              deadline: .now() + DispatchTimeInterval.milliseconds(delayMs)
+            ) {
               self.apply(name, code: code, attempt: attempt + 1, result: result)
             }
             return
