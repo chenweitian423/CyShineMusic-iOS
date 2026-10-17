@@ -1214,11 +1214,20 @@ class PlayerController extends StateNotifier<PlayerState>
     PlayerTrack track, {
     Duration? duration,
   }) async {
-    final embeddedArtwork = await _audioHandler.cacheArtwork(track.coverBytes);
+    // ★ 锁屏 / 控制中心的封面必须落成**本地文件**。
+    // audio_service 的 iOS 实现（AudioServicePlugin.m `setMediaItem`）只会从
+    // `extras['artCacheFile']` 读本地路径来构造 MPMediaItemArtwork；纯网络
+    // artUri 若没有缓存文件，`artwork` 会是 nil，锁屏卡片就没有缩略图。
+    // 它自己会试着下载并缓存，但那一步失败时静默无日志，很难排查 ——
+    // 这里自己先落盘，把不确定性消掉。
+    final localArt = await _audioHandler.cacheArtwork(
+      track.coverBytes,
+      fallbackUrl: _networkArtworkUri(track.coverUrl)?.toString(),
+    );
     return _buildMediaItem(
       track,
       duration: duration,
-      artUri: embeddedArtwork ?? _networkArtworkUri(track.coverUrl),
+      artUri: localArt ?? _networkArtworkUri(track.coverUrl),
     );
   }
 
@@ -1735,6 +1744,8 @@ class PlayerController extends StateNotifier<PlayerState>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.resumed) {
       unawaited(AppLogger.logAndroidDiagnostics(state.name));
+      // 切后台是锁屏卡片唯一会出现的那一刻，趁机采一次媒体会话状态。
+      unawaited(AppLogger.logIosMediaSession(state.name));
       unawaited(AppLogger.flush());
     }
     if (state != AppLifecycleState.resumed) {

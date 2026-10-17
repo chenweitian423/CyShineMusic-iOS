@@ -49,7 +49,10 @@ class AppLogger {
       environment['packageInfoError'] = error.toString();
     }
     _environment = jsonEncode(environment);
-    await write('app-session', 'start session=$sessionId environment=$_environment');
+    await write(
+      'app-session',
+      'start session=$sessionId environment=$_environment',
+    );
     await logAndroidDiagnostics('startup');
   }
 
@@ -79,6 +82,28 @@ class AppLogger {
       _androidDiagnostics = json;
     }
     await write(scope, 'reason=$reason data=$json');
+  }
+
+  /// ★ 锁屏 / 控制中心播放卡片的诊断（仅 iOS）。
+  ///
+  /// 这条链路与灵动岛**无关**：卡片由 `MPNowPlayingInfoCenter` 驱动，
+  /// 系统自己画，不需要 ActivityKit 或 Widget 扩展。查「锁屏没有播放卡片」时
+  /// 看这一行就够了 —— 它直接把 nowPlayingInfo 是否为空、封面有没有、
+  /// 后台音频有没有声明都列出来了。
+  ///
+  /// 方法名 `mediaSession` 是 iOS 侧新增的扩展（上游 Android 没有这个能力，
+  /// 不存在改名冲突的问题）。
+  static Future<void> logIosMediaSession(String reason) async {
+    if (!Platform.isIOS) return;
+    try {
+      final data = await const MethodChannel('cy_shine_music/app_task')
+          .invokeMapMethod<String, dynamic>('mediaSession')
+          .timeout(const Duration(seconds: 2));
+      final summary = data?['summary'] ?? '(空)';
+      await write('media-session', 'reason=$reason $summary');
+    } catch (error) {
+      await write('media-session', 'reason=$reason unavailable=$error');
+    }
   }
 
   static String exportText(List<String> lines) =>

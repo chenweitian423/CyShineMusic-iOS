@@ -23,6 +23,16 @@
 	<key>CFBundleVersion</key>
 	<string>9</string>
 
+	<!-- ★ 与主 App 一致（1=iPhone, 2=iPad）。
+	     这个键**缺失时 iOS 可能直接不加载扩展** —— 表现是「灵动岛和桌面小组件
+	     一起消失，而主 App 一切正常」，没有任何报错。Xcode 从来不会自动补，
+	     所以这个手工组装的 .appex 必须自己写（见 build_widget_extension.sh 的断言）。 -->
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+		<integer>2</integer>
+	</array>
+
 	<key>NSExtension</key>
 	<dict>
 		<!-- WidgetKit 扩展，同时承载「桌面小组件」与「实时活动」 -->

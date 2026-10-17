@@ -93,6 +93,18 @@ if (!widgetPlist.includes('NSSupportsLiveActivities')) {
   failures.push('ios/CyShineMusicWidget/Info.plist 缺少 NSSupportsLiveActivities（扩展侧也要写）');
 }
 
+// ⑥b ★ UIDeviceFamily —— 手工组装的 .appex 不会被 Xcode 自动补这个键，
+//缺失时 iOS 可能直接不加载扩展：灵动岛与桌面小组件一起消失，且**没有任何报错**。
+// 2.0.2 的产物里实测就是缺这个键（主 App 有 [1,2]，appex 完全没有）。
+if (!widgetPlist.includes('UIDeviceFamily')) {
+  failures.push([
+    'ios/CyShineMusicWidget/Info.plist 缺少 UIDeviceFamily ——',
+    '这个 .appex 是手工组装的（xcrun swiftc），Xcode 不会替它注入这个键。',
+    '缺失时 iOS 可能直接不加载扩展：灵动岛不显示 + 桌面搜不到小组件，',
+    '而主 App 一切正常、控制台也没有任何报错。',
+  ].join('\n  '));
+}
+
 // ⑦ 主 App 与扩展必须共用同一个 ActivityAttributes 源文件，
 //    否则系统匹配不到已启动的活动（类型不一致 = 灵动岛不渲染）。
 if (!/CyShineActivityAttributes\.swift/.test(bridge)) {

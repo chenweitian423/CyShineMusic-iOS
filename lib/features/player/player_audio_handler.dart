@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../../core/services/app_logger.dart';
+import '../../core/ui/cover_image_source.dart';
 import 'media_item_copy.dart';
 
 typedef PlayerTransportCallback = Future<void> Function();
@@ -385,8 +386,23 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
     _broadcastState(_player.snapshot);
   }
 
-  Future<Uri?> cacheArtwork(Uint8List? bytes) async {
-    if (bytes == null || bytes.isEmpty) return null;
+  /// 把封面落成**本地文件**并返回其 [Uri]。
+  ///
+  /// ★ 为什么必须是本地文件：iOS 的锁屏 / 控制中心卡片由
+  /// `MPNowPlayingInfoCenter` 驱动，而 `audio_service` 的 darwin 实现
+  /// （`AudioServicePlugin.m` 的 `setMediaItem`）**只**从
+  /// `extras['artCacheFile']` 读本地路径来构造 `MPMediaItemArtwork`。
+  /// 传一个 http(s) 的 `artUri` 而没有本地文件时，`artwork` 直接是 nil，
+  /// 锁屏卡片就没有缩略图 —— 而且整个过程**不报任何错**。
+  ///
+  /// [bytes] 为内嵌封面（本地音乐）；为 null 时回落到 [fallbackUrl] 下载。
+  /// 返回 null 表示拿不到封面，调用方应让 UI 用占位图。
+  Future<Uri?> cacheArtwork(Uint8List? bytes, {String? fallbackUrl}) async {
+    Uint8List? data = bytes;
+    if (data == null || data.isEmpty) {
+      data = await _downloadArtwork(fallbackUrl);
+    }
+    if (data == null || data.isEmpty) return null;
     final cacheRoot = await getTemporaryDirectory();
     final artDirectory = Directory(
       '${cacheRoot.path}${Platform.pathSeparator}media_art',
@@ -394,15 +410,119 @@ class PlayerAudioHandler extends BaseAudioHandler with SeekHandler {
     if (!artDirectory.existsSync()) {
       await artDirectory.create(recursive: true);
     }
-    final extension = _artworkExtension(bytes);
+    final extension = _artworkExtension(data);
     final file = File(
       '${artDirectory.path}${Platform.pathSeparator}'
-      '${sha256.convert(bytes)}.$extension',
+      '${sha256.convert(data)}.$extension',
     );
     if (!file.existsSync()) {
-      await file.writeAsBytes(bytes, flush: true);
+      await file.writeAsBytes(data, flush: true);
     }
     return file.uri;
+  }
+
+  /// 下载网络封面。失败一律走日志页而不是静默 —— 锁屏没封面最难查，
+  /// 必须留下痕迹。`music.126.net` 需要 Referer，见 CoverImageSource.headersFor。
+  Future<Uint8List?> _downloadArtwork(String? url) async {
+    final normalized = url?.trim();
+    if (normalized == null || normalized.isEmpty) return null;
+    final uri = Uri.tryParse(normalized);
+    if (uri == null || !uri.hasScheme || !uri.isScheme('http')) return null;
+    try {
+      final client = HttpClient();
+      try {
+        final request = await client
+            .getUrl(uri)
+            .timeout(const Duration(seconds: 8));
+        CoverImageSource.headersFor(normalized)?.forEach(request.headers.set);
+        final response = await request.close().timeout(
+          const Duration(seconds: 8),
+        );
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          unawaited(
+            AppLogger.write(
+              'artwork',
+              '下载失败 http=${response.statusCode} url=${_logSafeUrl(normalized)}',
+            ),
+          );
+          return null;
+        }
+        final bytes = await _collectResponseBytes(
+          response,
+        ).timeout(const Duration(seconds: 12));
+        // 只接受真正的图片，避免把错误页 HTML 当封面存进去。
+        if (!_looksLikeImage(bytes)) {
+          unawaited(
+            AppLogger.write(
+              'artwork',
+              '响应不是图片 bytes=${bytes.length} url=${_logSafeUrl(normalized)}',
+            ),
+          );
+          return null;
+        }
+        return bytes;
+      } finally {
+        client.close(force: true);
+      }
+    } catch (error) {
+      unawaited(
+        AppLogger.write(
+          'artwork',
+          '下载异常 url=${_logSafeUrl(normalized)} error=$error',
+        ),
+      );
+      return null;
+    }
+  }
+
+  /// 手动收集响应体。
+  ///
+  /// `consolidateHttpClientResponseBytes` 在 `package:http` 里而不是 `dart:io`，
+  /// 为一个封面下载多引一个包不值得，这里自己按块收集并加上限 ——
+  /// 封面正常只有几十 KB，设 8 MB 上限防止异常响应把内存吃满。
+  static Future<Uint8List> _collectResponseBytes(
+    HttpClientResponse response,
+  ) async {
+    final builder = BytesBuilder(copy: false);
+    var total = 0;
+    await for (final chunk in response) {
+      total += chunk.length;
+      if (total > 8 * 1024 * 1024) {
+        throw StateError('封面响应超过 8MB 上限');
+      }
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
+
+  /// 锁屏封面常见格式：PNG / JPEG / GIF / WebP。
+  static bool _looksLikeImage(Uint8List bytes) {
+    if (bytes.length < 4) return false;
+    final b = bytes;
+    // PNG: 89 50 4E 47   JPEG: FF D8 FF   GIF: 47 49 46   WEBP: RIFF....WEBP
+    if (b[0] == 0x89 && b[1] == 0x50 && b[2] == 0x4E && b[3] == 0x47)
+      return true;
+    if (b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return true;
+    if (b[0] == 0x47 && b[1] == 0x49 && b[2] == 0x46) return true;
+    if (b.length >= 12 &&
+        b[0] == 0x52 &&
+        b[1] == 0x49 &&
+        b[2] == 0x46 &&
+        b[3] == 0x46 &&
+        b[8] == 0x57 &&
+        b[9] == 0x45 &&
+        b[10] == 0x42 &&
+        b[11] == 0x50) {
+      return true;
+    }
+    return false;
+  }
+
+  /// 去掉查询串再记日志，避免把带签名的 URL 整条写进日志。
+  static String _logSafeUrl(String url) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return '(无法解析)';
+    return '${uri.scheme}://${uri.host}${uri.path}';
   }
 
   @override

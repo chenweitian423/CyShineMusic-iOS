@@ -85,6 +85,18 @@ cp "$SRC/Info.plist" "$APPEX/Info.plist"
 # 版本号与主 App 对齐（主 App 由 --build-name / --build-number 注入）。
 # 扩展与主 App 的 CFBundleVersion 必须一致，否则 iOS 会拒绝加载扩展，
 # 表现为「灵动岛怎么都不出现」而控制台只有一条很含糊的提示。
+#
+# ★ UIDeviceFamily：Xcode 在真正 build extension target 时会自动注入这个键，
+#   但这里是手工组装 .appex，没人会替我们补。**缺失时 iOS 可能直接不加载扩展**
+#   —— 桌面小组件搜不到、灵动岛不出现，而主 App 完全正常、一条报错都没有。
+#   已实测过我们 2.0.2 的包里 appex 就是缺这个键。
+if ! /usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" "$APPEX/Info.plist" >/dev/null 2>&1; then
+  echo "      (补写 UIDeviceFamily —— 缺失会导致扩展不被加载)"
+fi
+/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily array" "$APPEX/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:0 integer 1" "$APPEX/Info.plist" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Add :UIDeviceFamily:1 integer 2" "$APPEX/Info.plist" 2>/dev/null || true
+
 if [ -n "${IOS_BUILD_NAME:-}" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $IOS_BUILD_NAME" "$APPEX/Info.plist"
   echo "      CFBundleShortVersionString = $IOS_BUILD_NAME"
@@ -107,9 +119,10 @@ echo "[info] 二进制信息："
 xcrun lipo -info "$APP_PATH/PlugIns/$NAME.appex/$NAME" | sed 's/^/      /'
 echo
 echo "[info] Info.plist 关键项："
-for key in CFBundleIdentifier CFBundleExecutable NSExtension MinimumOSVersion; do
+for key in CFBundleIdentifier CFBundleExecutable NSExtension MinimumOSVersion UIDeviceFamily; do
   printf "      %-32s " "$key"
-  /usr/libexec/PlistBuddy -c "Print :$key" "$APP_PATH/PlugIns/$NAME.appex/Info.plist" 2>/dev/null || echo "(缺失)"
+  /usr/libexec/PlistBuddy -c "Print :$key" "$APP_PATH/PlugIns/$NAME.appex/Info.plist" 2>/dev/null | tr '\n' ' ' || echo "(缺失)"
+  echo
 done
 /usr/libexec/PlistBuddy -c "Print :NSExtension:NSExtensionPointIdentifier" \
   "$APP_PATH/PlugIns/$NAME.appex/Info.plist" 2>/dev/null | sed 's/^/      NSExtensionPointIdentifier  /'

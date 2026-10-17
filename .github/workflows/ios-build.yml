@@ -177,6 +177,14 @@ jobs:
           grep -q "NSSupportsLiveActivities" \
             "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
             || { echo "::error::扩展 Info.plist 缺少 NSSupportsLiveActivities"; exit 1; }
+          # ★ UIDeviceFamily：手工组装的 .appex 不会由 Xcode 自动注入这个键，
+          #   缺失时 iOS 可能直接不加载扩展 —— 小组件与灵动岛一起消失且无报错。
+          #   2.0.2 的包里就实测到过这个缺失，所以在这里硬拦。
+          grep -q "UIDeviceFamily" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" \
+            || { echo "::error::扩展 Info.plist 缺少 UIDeviceFamily（会导致扩展不被加载）"; exit 1; }
+          echo "扩展 UIDeviceFamily: $(/usr/libexec/PlistBuddy -c "Print :UIDeviceFamily" \
+            "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist" | tr '\n' ' ')"
           APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$APP/Info.plist")
           EXT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" \
             "$APP/PlugIns/CyShineMusicWidget.appex/Info.plist")

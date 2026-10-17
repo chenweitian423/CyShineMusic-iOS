@@ -775,9 +775,59 @@ final class CyShineAppTaskChannel {
     case "diagnostics":
       result(diagnostics())
 
+    case "mediaSession":
+      result(mediaSessionDiagnostics())
+
     default:
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  /// ★ 锁屏 / 控制中心播放卡片的诊断。
+  ///
+  ///   这条链路与灵动岛**完全无关** —— 它由 `audio_service` → `MPNowPlayingInfoCenter`
+  ///   驱动，系统自己画卡片，不需要 ActivityKit，也不需要 Widget 扩展。
+  ///   （趣听音乐的锁屏卡片就是这一套，它根本没做灵动岛。）
+  ///
+  ///   卡片出不来的常见原因按「最可能 → 最不可能」排：
+  ///     1. 后台音频没被允许（`UIBackgroundModes` 缺 `audio`）
+  ///     2. 音频会话没激活 / 被别的 App 抢走
+  ///     3. `nowPlayingInfo` 为空 —— 卡片需要 title+artist+rate 至少有一项
+  ///     4. 封面是网络 URL 而非本地文件（audio_service 只认本地，见下）
+  private func mediaSessionDiagnostics() -> [String: Any?] {
+    let center = MPNowPlayingInfoCenter.default()
+    let info = center.nowPlayingInfo
+    let session = AVAudioSession.sharedInstance()
+
+    var parts: [String] = []
+    parts.append("后台音频=\(Self.backgroundModes().contains("audio") ? "已声明" : "未声明⚠")")
+    parts.append("会话分类=\(session.category.rawValue)")
+    parts.append("会话活动=\(session.isOtherAudioPlaying ? "他人有声" : "独占")")
+    // nowPlayingInfo 为 nil 时系统不会画卡片，这里是最直接的判据。
+    parts.append("nowPlaying=\(info == nil ? "空⚠" : "有\(info!.count)项")")
+
+    if let info {
+      let title = info[MPMediaItemPropertyTitle] as? String ?? ""
+      let artist = info[MPMediaItemPropertyArtist] as? String ?? ""
+      let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double ?? 0
+      let art = info[MPMediaItemPropertyArtwork] != nil
+      parts.append("标题=\(title.isEmpty ? "空⚠" : "有")")
+      parts.append("歌手=\(artist.isEmpty ? "空⚠" : "有")")
+      parts.append("速率=\(rate)")
+      parts.append("封面=\(art ? "有" : "无⚠")")
+    }
+
+    return [
+      "summary": parts.joined(separator: " "),
+      "hasNowPlaying": info != nil,
+      "backgroundAudioDeclared": Self.backgroundModes().contains("audio"),
+      "sessionCategory": session.category.rawValue,
+      "isOtherAudioPlaying": session.isOtherAudioPlaying,
+    ]
+  }
+
+  private static func backgroundModes() -> [String] {
+    (Bundle.main.object(forInfoDictionaryKey: "UIBackgroundModes") as? [String]) ?? []
   }
 
   private func diagnostics() -> [String: Any?] {
