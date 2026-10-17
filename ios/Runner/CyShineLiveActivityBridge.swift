@@ -23,6 +23,10 @@
 import ActivityKit
 import Flutter
 import Foundation
+// MPNowPlayingInfoCenter / MPMediaItemArtwork 在 MediaPlayer 里。
+// 锁屏播放卡片靠它，与 ActivityKit 无关 —— 缺这个 import 会报一串
+// "Cannot find 'MPMediaItemPropertyArtist' in scope"。
+import MediaPlayer
 import UIKit
 import UserNotifications
 

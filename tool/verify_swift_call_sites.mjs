@@ -69,6 +69,42 @@ function parseParam(seg) {
   return { name, optional: /=/.test(rest) };
 }
 
+/** 已知类型 / 前缀 -> 所属模块。用到了却没 import，编译必然报
+ *  "Cannot find 'X' in scope"。本机没有 Swift 工具链，只能这样提前拦。 */
+const TYPE_MODULES = [
+  { module: 'MediaPlayer', names: [
+    'MPNowPlayingInfoCenter', 'MPMediaItemArtwork', 'MPNowPlayingInfoMediaType',
+    'MPMediaItemPropertyTitle', 'MPMediaItemPropertyArtist', 'MPMediaItemPropertyAlbumTitle',
+    'MPMediaItemPropertyArtwork', 'MPMediaItemPropertyPlaybackDuration',
+    'MPNowPlayingInfoPropertyElapsedPlaybackTime', 'MPNowPlayingInfoPropertyPlaybackRate',
+    'MPNowPlayingInfoPropertyDefaultPlaybackRate', 'MPNowPlayingInfoPropertyMediaType',
+    'MPNowPlayingInfoPropertyIsLiveStream',
+  ] },
+  { module: 'ActivityKit', names: [
+    'ActivityAuthorizationInfo', 'ActivityContent', 'ActivityAttributes', 'Activity',
+  ] },
+  { module: 'WidgetKit', names: ['WidgetCenter', 'WidgetBundle', 'TimelineProvider'] },
+  { module: 'AVFoundation', names: ['AVAudioSession', 'AVAsset', 'AVPlayer'] },
+  { module: 'UserNotifications', names: ['UNUserNotificationCenter', 'UNAuthorizationStatus'] },
+];
+
+/** 检查「用了某类型却没 import 对应模块」。 */
+function checkImports(src, file) {
+  const imports = new Set(
+    [...src.matchAll(/^\s*import\s+([A-Za-z_]\w*)/gm)].map((m) => m[1]),
+  );
+  for (const { module, names } of TYPE_MODULES) {
+    if (imports.has(module)) continue;
+    const hit = names.find((n) => new RegExp(`(?<![\\w.])${n}\\b`).test(src));
+    if (hit) {
+      failures.push(
+        `${file} 用了 ${hit} 但没有 import ${module}`
+        + `（会报 Cannot find '${hit}' in scope）`,
+      );
+    }
+  }
+}
+
 const failures = [];
 const stats = { files: 0, privates: 0, calls: 0 };
 
@@ -84,6 +120,9 @@ for (const file of files) {
   }
   const src = stripNoise(raw);
   stats.files++;
+
+  // 0) 用了类型但没 import 对应模块
+  checkImports(src, file);
 
   // 1b) 易错的静态构造器：`.milliseconds` / `.seconds` 只能被**调用**，
   //     不能当属性读（`delay.milliseconds` 会报
