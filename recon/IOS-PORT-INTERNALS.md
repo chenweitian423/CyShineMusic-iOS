@@ -776,3 +776,56 @@ EOF
 
 上传前建议先自解压核对（见 7.3）：主 App 与扩展的 `CFBundleShortVersionString`
 **和** `CFBundleVersion` 都必须一致、扩展 id 必须是主 App id 的前缀。
+
+---
+
+## 12. 轮次汇总
+
+### 第 9 轮（截至 `ios-v2.0.1` / build 17，提交 `5fbcd5e`）
+
+**已完成**
+
+| 项 | 落点 |
+|---|---|
+| 原生 iOS 全量实现（BASS + JSCore + 6 个 Runner 通道 + 3 个 path 插件） | 1~5 轮 |
+| CI 出未签名 IPA（含 Widget Extension 独立编译与嵌入） | 第 2、7 轮 |
+| 真机 3 个 bug：音源初始化超时 / 播放报 Android-only / 点状态栏不回顶 | `ios.2` / `ios.3` / `ios.4` |
+| 灵动岛 + 锁屏实时活动 + 桌面小组件（Widget Extension） | 第 7 轮 |
+| 原生失败回灌 App 内日志页（`cy_shine_music/native_log`） | 第 8 轮 |
+| 备用图标改走资产目录（`Assets.xcassets/AppIcon*.appiconset`） | 第 8 轮 |
+| iOS 独立版本号体系（`tool/ios_version.txt`） | 第 8 轮 |
+| ★ 实时活动补通知授权请求 + 诊断加 机型/通知/Bundle 三项判据 | 第 9 轮 |
+| 日志页放开 iOS 原生诊断（`app_logger.dart` 按平台分流） | 第 9 轮 |
+
+**已排除（不是 bug，别再查）**
+
+| 现象 | 结论 |
+|---|---|
+| 「App 里看不到灵动岛」 | 前台运行的 App 永远不显示自己的实时活动，必须回桌面/锁屏（#37） |
+| 「灵动岛位置空着」 | 灵动岛是 iPhone 14 Pro 及以上的硬件，刘海屏机型只在锁屏显示（#38） |
+| 「桌面搜不到小组件」 | 侧载扩展要重启一次 iPhone 才会被 PlugInKit 注册（#42）；免费签名的 wildcard App ID 本就不支持 App Extensions |
+| 「桌面小组件停在引导态」 | App Groups 需付费账号，属预期降级（#29 / 22） |
+| 「备用图标切换失败」 | 老路径（散装 PNG + 手写 plist）在新 Xcode/iOS 静默失效（#32），已改资产目录 |
+| 「每次出包版本号都一样」 | 上游 pubspec 里的 1.0.8；iOS 已独立编号（第 11 节） |
+
+**当前卡点（唯一）**
+
+灵动岛真机复测 `ios-v2.0.1`。判据全部收敛到 App 内「设置 → 日志」页
+`live-activity` 的一行诊断（字段含义见 6.4 节第 4 条）：
+
+| 那行里看到 | 说明 | 下一步 |
+|---|---|---|
+| `通知=未询问` | 授权弹窗没弹出来 | 调 `ensureNotificationAuthorization()` 的触发点 |
+| `通知=被拒绝` | 用户点了不允许 | 设置 → 栖弦 → 通知 → 允许通知 |
+| `开关=false` | 用户在设置里关了实时活动 | 设置 → 栖弦 → 实时活动 |
+| `扩展=缺失` | 重签工具丢了 `PlugIns/` | 换工具重新签名 |
+| `Bundle=… ⚠前缀不匹配` | 重签只改了主 App 的 id | 让扩展 id 跟着主 App 一起改 |
+| `机型=iPhoneNN,N(未收录型号)` 且实际是刘海屏 | 型号表没收录该机型 | 补 `dynamicIslandModels` |
+| 一行全正常、`在跑的活动=1`，锁屏能看到灵动岛、顶部看不到 | 就是刘海屏硬件 | 属预期 |
+
+**关键路径（新会话从这里开始）**
+
+1. 读 `F:\codex项目\音乐源播放器\HANDOFF.md` 顶部「⚡ 启动包」
+2. 若要动 Swift → 改完 push，`gh run watch -R chenweitian423/CyShineMusic-iOS <run_id>` 等 macOS runner
+3. 出包后手动发 Release（第 11 节的命令序列），并更新 `tool/ios_version.txt`
+4. 每次都要刷新 HANDOFF 顶部快照 + 追加当日 `.workbuddy/memory/` 日志
