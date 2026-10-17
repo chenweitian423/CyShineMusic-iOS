@@ -145,7 +145,7 @@ final class CyShineAppIconChannel {
     let current = UIApplication.shared.alternateIconName
     if code == "classic" {
       if current == nil { result("classic"); return }
-      apply(nil, code: code) { error in result(error) }
+      apply(nil, code: code, attempt: 0) { error in result(error) }
       return
     }
 
@@ -204,8 +204,11 @@ final class CyShineAppIconChannel {
 
   /// 正在进行的切换。系统不允许并发调用，必须排队。
   private var iconChangeInFlight = false
-  /// 排队中的请求（取最后一次 —— 用户连点时中间那几次没有意义）。
-  private var pendingIconRequest: ((FlutterResult) -> Void)?
+  /// 排队中的**整段请求**（取最后一次 —— 用户连点时中间那几次没有意义）。
+  ///
+  /// 存的是「把这次切换重新跑一遍」的闭包，而不是它的 completion ——
+  /// 否则排队的请求在轮到时无事可做却回 success，调用方会以为切换成功了。
+  private var pendingIconRequest: (() -> Void)?
 
   /// 真正调用系统 API。completion 拿到 nil 表示成功。
   private func apply(_ name: String?,
@@ -230,7 +233,10 @@ final class CyShineAppIconChannel {
       guard let self else { return }
       // 串行化：上一次没落盘就再切，必然撞 -54。
       if self.iconChangeInFlight {
-        self.pendingIconRequest = result
+        // 排的是**整段请求**：轮到时重新跑一遍 apply，那时 inFlight 已清零。
+        self.pendingIconRequest = { [weak self] in
+          self?.apply(name, code: code, attempt: 0, result: result)
+        }
         CyShineNativeLog.write("app-icon", "上一次切换尚未结束，本次请求排队（当前=\(code)）")
         return
       }
@@ -260,12 +266,12 @@ final class CyShineAppIconChannel {
               "app-icon",
               "切换 \(code) -> \(name ?? "主图标") 失败：\(Self.describe(error))")
           }
-          // 排队的请求现在可以跑了。
+          result(error)
+          // 先回本次的结果，再把排队的请求放出去跑（它会看到 inFlight 已清零）。
           if let queued = self.pendingIconRequest {
             self.pendingIconRequest = nil
-            queued(nil)
+            DispatchQueue.main.async(execute: queued)
           }
-          result(error)
         }
       }
     }

@@ -81,6 +81,12 @@ jobs:
       - name: Verify live activity authorization chain
         run: node tool/verify_live_activity_auth.mjs
 
+      # Swift 只能靠 macOS runner 编译（一次 ~10 分钟）。这条检查在编译之前
+      # 抓「私有方法改了参数但调用点漏改」这类签名不匹配 —— ios-v2.0.5 就因为
+      # 漏改一处 `apply(...)` 白跑了一次构建。
+      - name: Verify Swift call sites
+        run: node tool/verify_swift_call_sites.mjs
+
       - name: Prepare iOS alternate icons
         run: bash tool/fetch_app_icons.sh
 
