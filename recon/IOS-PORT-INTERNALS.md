@@ -662,8 +662,35 @@ q = plistlib.loads(z.read('Payload/Runner.app/PlugIns/CyShineMusicWidget.appex/I
 | `dart analyze lib packages` | Dart 侧静态检查（期望 1 issue：上游既有的 onReorder 弃用） |
 | `python3 tool/patch_xcodeproj.py` | Xcode 工程引用（幂等） |
 | `bash tool/fetch_app_icons.sh` | 从 `assets/app_icons/classic.png` 生成全部 iOS 图标（纯标准库，约 6 秒） |
+| `node tool/verify_live_activity_auth.mjs` | 实时活动授权链路的回归守卫（第 10 轮新增）。7 项检查，防「授权请求挂在不会被执行的路径上」这类死锁。已接入 CI，并做过负向测试 |
 
-没有 Mac 也能验证的就这四样；Swift 侧只能靠 CI 编译。
+没有 Mac 也能验证的就这五样；Swift 侧只能靠 CI 编译。
+
+### 验证一个 IPA 到底有没有某项能力
+
+拿到别人的 IPA 当参考前，**先证明它真的有那个功能**，否则会把人带偏。
+两条独立证据（缺一不可）：
+
+| 维度 | 手段 | 判据 |
+|---|---|---|
+| 有没有扩展 | 解包后看 `Payload/*.app/PlugIns/` 下有没有 `.appex` | 没有 = 不可能有 Widget/Live Activity |
+| 有没有链框架 | 在**主二进制**里数符号的字节出现次数 | `ActivityKit` / `WidgetKit` / `DynamicIsland` / `ActivityConfiguration` 计数为 0 = 没实现 |
+| 有没有声明 | Info.plist 查 `NSSupportsLiveActivities` | 缺失 = 没声明（但**反之不成立**：有的 App 硬编码） |
+
+Python 一行版（Windows 上注意 `/tmp` 不可用于 Python，用 `%TEMP%`）：
+
+```bash
+unzip -q app.ipa -d "$TEMP/x"
+APP=$(find "$TEMP/x/Payload" -maxdepth 1 -name "*.app")
+ls "$APP/PlugIns" 2>/dev/null || echo "无扩展"
+python -c "
+d=open(r'$APP/<主二进制>','rb').read()
+for k in [b'ActivityKit',b'WidgetKit',b'DynamicIsland',b'ActivityConfiguration']:
+    print(k.decode(), d.count(k))"
+```
+
+只查 plist 或只查目录都可能漏：有的 App 把符号硬编码成字符串、
+有的把扩展塞在 `Frameworks/` 下而不是 `PlugIns/`。
 
 ---
 
@@ -781,7 +808,73 @@ EOF
 
 ## 12. 轮次汇总
 
-### 第 9 轮（截至 `ios-v2.0.1` / build 17，提交 `5fbcd5e`）
+### 第 10 轮（`2.0.2`，提交 `d46dcb4`）：灵动岛授权死锁
+
+**这一轮推翻了第 9 轮的结论。** 第 9 轮把「没请求通知授权」记成「高概率根因」，
+实际是**逻辑上必然复现的死锁** —— 那段代码从未被执行过。
+
+#### 死锁的精确形状
+
+```
+① iOS 17 起，通知处于 notDetermined 时
+   ActivityAuthorizationInfo().areActivitiesEnabled == false
+                    ↓
+② Dart live_activity_service.dart:74
+   if (!supported) return;          ← 不挂监听，也不调 start
+                    ↓
+③ CyShineLiveActivityBridge.swift（v2.0.1）把授权请求只写在 case "start" 里
+                    ↓
+④ start 永不被调用 → 权限永远问不到 → ① 永远为 false
+```
+
+**可观测后果**：那个通知授权弹窗**一次都没出现过**。
+所以「灵动岛不显示」与「没弹通知授权」不是两个独立现象，是同一个死锁的两端。
+
+#### 三处修法
+
+| 位置 | 改动 | 为什么这么改 |
+|---|---|---|
+| `case "isSupported"` | 先调 `ensureNotificationAuthorization()` | 这是**一定会被执行**的路径。方法幂等，所以仍只问一次 |
+| 同上 | 新增 `isNotificationAuthorizationPending` | 「弹窗没回答」与「用户拒绝」在 `areActivitiesEnabled` 上**都是 false**，必须自己记一份区分。前者按可用放行，后者如实回 false |
+| `ensureNotificationAuthorization` 回调 | 经 `onAuthorizationResolved` → 通道方法 `authorizationResolved` 主动推 Dart | `areActivitiesEnabled` 是在**授权落地那一刻**才翻 true 的；Dart 若已拿着 false 放弃，不会自己醒过来 |
+| `live_activity_service.dart` | `_ensureAvailable({bool force})` + 处理 `authorizationResolved` | 授权回调要能突破「已判定过 false」的缓存，并立即补推当前曲目 |
+| `case "start"` | 真被关掉时静默 `result(false)` + 写日志，**不回灌 FlutterError** | 回灌会被 Dart 记成「推送失败」，看起来像故障 |
+
+#### 回归守卫
+
+`tool/verify_live_activity_auth.mjs`（已接进 CI，紧跟 `verify_preload_protocol`）。
+7 项检查：授权调用在 `isSupported` 路径上 / 有区分 pending / Dart 处理回调 /
+`_ensureAvailable` 有 force / 主 App 两个 plist 键 / 扩展侧 plist 键 / 共用同一份
+`CyShineActivityAttributes.swift`。
+
+**已做负向测试**（注入回归 → `exit 1` + 打印修法；还原 → `exit 0`）——
+守卫本身也要被验证，否则「一直通过」可能只是它什么都没查。
+
+#### 顺带核实、决定不动的两项
+
+| 项 | 结论 |
+|---|---|
+| `NSSupportsLiveActivitiesFrequentUpdates` 键名 | **写法正确**，与 Apple 官方文档一致。网上流传的 `NSSupportsFrequentLiveActivityUpdates` 是错的，别被带偏 |
+| 现有 IPA 结构 | 两侧 `NSSupportsLiveActivities`、`MinimumOSVersion=16.2`、版本号一致、`DynamicIsland` 符号 106 次 —— 本来就对 |
+
+#### 参考对象的核查方法（可复用）
+
+用户提供了趣听音乐的 IPA 当参考。判定它**没有**实时活动：
+
+| 检查 | 手段 | 结果 |
+|---|---|---|
+| 有没有扩展 | `Payload/*.app/PlugIns/` 是否存在 `.appex` | 无 `PlugIns/` |
+| 有没有链接框架 | 在主二进制里数符号字节出现次数 | `ActivityKit` / `WidgetKit` / `DynamicIsland` / `ActivityConfiguration` **各 0** |
+| 有没有声明 | Info.plist 查 `NSSupportsLiveActivities` | 无 |
+
+**DCloud uni-app 壳，连框架都没链进去。** 两条独立证据都指向「没实现」，
+才能下结论 —— 只看 plist 或只看目录都可能漏（有的 App 硬编码字符串、
+有的把扩展放在 `Frameworks/` 下）。
+
+> 教训：这次「参考一个不存在的实现」反而是有价值的 ——
+> 它逼着回头查自己的包，才找到真正的死锁。
+
+### 第 9 轮（`ios-v2.0.1` / build 17）
 
 **已完成**
 
