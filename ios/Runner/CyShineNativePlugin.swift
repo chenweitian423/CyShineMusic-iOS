@@ -14,11 +14,13 @@
 // 无需改动（唯一例外见 storage_browser：iOS 沙盒没有全盘扫描，见下方说明）。
 
 import AVFoundation
+import ActivityKit
 import Flutter
 import Foundation
 import MediaPlayer
 import UIKit
 import UniformTypeIdentifiers
+import WidgetKit
 
 @available(iOS 13.0, *)
 public final class CyShineNativePlugin: NSObject, FlutterPlugin {
@@ -846,8 +848,73 @@ final class CyShineAppTaskChannel {
     case "mediaSession":
       result(mediaSessionDiagnostics())
 
+    case "widgetStatus":
+      // 异步（getCurrentConfigurations 有回调），所以单独走一条路径。
+      widgetStatus(result)
+
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// ★ 判断「Widget 扩展到底有没有被系统加载」—— 这是灵动岛不显示时最关键的一个问题。
+  ///
+  ///   为什么必须用 `WidgetCenter.getCurrentConfigurations`：
+  ///   扩展的 `.appex` 文件**在不在包里**，和 iOS**有没有加载它**，是两件事。
+  ///   侧载重签时如果没给嵌套的 .appex 单独签名，文件还在、系统却不会加载它 ——
+  ///   此时 `Activity.request` 依然会**成功返回**（ActivityKit 不校验扩展存在），
+  ///   但屏幕上什么都不会出现。这正是我们观察到的现象：
+  ///     日志里 `活动已发起 id=...`，但锁屏与灵动岛都没有卡片。
+  ///
+  ///   `getCurrentConfigurations` 返回空数组 ⇒ 系统手里没有任何来自本 App 的小组件
+  ///   ⇒ 扩展没被加载，问题不在 ActivityKit 而在签名/安装。
+  private func widgetStatus(_ result: @escaping FlutterResult) {
+    let app = Bundle.main
+    let appId = app.bundleIdentifier ?? "?"
+    let plugIns = app.builtInPlugInsURL
+    let appex = plugIns?.appendingPathComponent("CyShineMusicWidget.appex")
+    let binary = appex?.appendingPathComponent("CyShineMusicWidget")
+
+    // ⚠ 必须用 [String: Any] 而不是 [String: Any?]：Flutter 的
+    //   StandardMessageCodec **不能编码 nil**，字典里放一个真 nil 会直接崩。
+    //   拿不到的值一律写字符串占位。
+    var base: [String: Any] = [:]
+    base["bundleIdentifier"] = appId
+    base["extensionOnDisk"] = appex.map {
+      FileManager.default.fileExists(atPath: $0.path)
+    } ?? false
+    base["extensionBinaryOnDisk"] = binary.map {
+      FileManager.default.fileExists(atPath: $0.path)
+    } ?? false
+    base["extensionIdentifier"] = appex.flatMap { Bundle(url: $0)?.bundleIdentifier } ?? "?"
+
+    if #available(iOS 16.2, *) {
+      base["liveActivitiesEnabled"] = ActivityAuthorizationInfo().areActivitiesEnabled
+      base["activityCount"] = Activity<CyShineActivityAttributes>.activities.count
+    } else {
+      base["liveActivitiesEnabled"] = false
+      base["activityCount"] = 0
+    }
+
+    WidgetCenter.shared.getCurrentConfigurations { configs in
+      var out = base
+      var count = -1
+      switch configs {
+      case .success(let list):
+        count = list.count
+        out["widgetConfigCount"] = list.count
+        out["widgetKinds"] = list.map { $0.kind }
+        out["extensionLoaded"] = !list.isEmpty
+      case .failure(let error):
+        out["widgetConfigCount"] = -1
+        out["extensionLoaded"] = false
+        out["configError"] = "\(error)"
+      }
+      let loaded = (out["extensionLoaded"] as? Bool) ?? false
+      out["verdict"] = loaded
+        ? "扩展已被系统加载（\(count) 个小组件）"
+        : "扩展未被系统加载⚠ —— 侧载重签多半没给 .appex 单独签名"
+      DispatchQueue.main.async { result(out) }
     }
   }
 

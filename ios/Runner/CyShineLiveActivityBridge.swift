@@ -326,6 +326,65 @@ final class CyShineLiveActivityBridge: NSObject {
 
   // MARK: - 活动生命周期
 
+  /// ★ 直接写 `MPNowPlayingInfoCenter`（锁屏 / 控制中心播放卡片）。
+  ///
+  ///   这张卡片与灵动岛是**两套独立机制**：它由系统根据 nowPlayingInfo 自己画，
+  ///   不需要 ActivityKit、不需要 Widget 扩展、不需要 App Group。
+  ///
+  ///   为什么还要在这里再写一遍 —— `audio_service` 已经会写：
+  ///   它的 Dart 侧要先把封面下载并落盘才发 `setMediaItem`，那一步是 await 的，
+  ///   网络慢或封面取不到时**整条 nowPlayingInfo 都会被拖住甚至不发**
+  ///   ⇒ 锁屏卡片一直不出现。这里用已经推给我们的标题/歌手/时长/进度
+  ///   先写一份，保证卡片立刻可用；封面能拿到再补。
+  ///
+  ///   走的是同一份数据源（`start`/`update` 的 args），两侧不会打架。
+  private func publishNowPlayingInfo(_ args: [String: Any], artworkPath: String?) {
+    guard let title = args["title"] as? String, !title.isEmpty else { return }
+    var info: [String: Any] = [:]
+    info[MPMediaItemPropertyTitle] = title
+    info[MPMediaItemPropertyArtist] = (args["artist"] as? String) ?? ""
+
+    let durationMs = (args["durationMs"] as? NSNumber)?.intValue ?? 0
+    if durationMs > 0 {
+      info[MPMediaItemPropertyPlaybackDuration] = Double(durationMs) / 1000
+    }
+    let positionMs = (args["positionMs"] as? NSNumber)?.intValue ?? 0
+    info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = Double(positionMs) / 1000
+
+    let playing = (args["playing"] as? Bool) ?? false
+    let rate: Double = playing ? 1.0 : 0.0
+    info[MPNowPlayingInfoPropertyPlaybackRate] = rate
+    info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+    info[MPNowPlayingInfoPropertyMediaType] = MPNowPlayingInfoMediaType.audio.rawValue
+
+    if let artworkPath, let image = Self.loadArtwork(relativePath: artworkPath) {
+      info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in
+        image
+      }
+    } else if let cover = args["cover"] as? String,
+              cover.hasPrefix("file://"),
+              let url = URL(string: cover),
+              let data = try? Data(contentsOf: url),
+              let image = UIImage(data: data) {
+      // Dart 侧缓存到沙盒临时目录的封面（同一 App 内可直接读）。
+      info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in
+        image
+      }
+    }
+
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+  }
+
+  /// 从 App Group 容器读封面；容器不可用时返回 nil（卡片仍会显示，只是没缩略图）。
+  private static func loadArtwork(relativePath: String) -> UIImage? {
+    guard let base = FileManager.default.containerURL(
+      forSecurityApplicationGroupIdentifier: appGroupIdentifier
+    ) else { return nil }
+    let url = base.appendingPathComponent(relativePath)
+    guard let data = try? Data(contentsOf: url) else { return nil }
+    return UIImage(data: data)
+  }
+
   private func endOrphanedActivities() {
     Task { @MainActor in
       for stale in Activity<CyShineActivityAttributes>.activities {
@@ -350,6 +409,10 @@ final class CyShineLiveActivityBridge: NSObject {
       return NSError(domain: "CyShineLiveActivity", code: 1,
                      userInfo: [NSLocalizedDescriptionKey: "缺少 trackId"])
     }
+
+    // ★ 不管灵动岛成不成，锁屏/控制中心的播放卡片都先写上 ——
+    //   它只依赖 MPNowPlayingInfoCenter，与扩展是否被加载无关。
+    publishNowPlayingInfo(args, artworkPath: nil)
 
     // 同一首歌重复 start 时退化成 update，避免灵动岛上出现两条。
     if let current = activity, current.attributes.trackId == trackId {
@@ -388,6 +451,10 @@ final class CyShineLiveActivityBridge: NSObject {
   }
 
   private func applyUpdate(_ args: [String: Any]) {
+    // ★ 先写锁屏卡片。下面几个分支会提前 return（活动被划掉 / 换歌），
+    //   但卡片必须每次都刷新，不能跟着 ActivityKit 的存活状态走。
+    publishNowPlayingInfo(args, artworkPath: nil)
+
     guard let activity else {
       // 活动已经不在（用户划掉了 / 系统回收了）—— 当作一次新的发起。
       _ = performStart(args)

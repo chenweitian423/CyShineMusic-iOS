@@ -54,6 +54,9 @@ class AppLogger {
       'start session=$sessionId environment=$_environment',
     );
     await logAndroidDiagnostics('startup');
+    // 启动就采一次：灵动岛不显示时，用户打开日志页第一屏就能看到
+    // 「扩展到底有没有被系统加载」，不必先播歌再切后台。
+    await logIosWidgetStatus('startup');
   }
 
   /// 方法名沿用上游（改名字会平添一处 rebase 冲突），但两端都跑：
@@ -103,6 +106,42 @@ class AppLogger {
       await write('media-session', 'reason=$reason $summary');
     } catch (error) {
       await write('media-session', 'reason=$reason unavailable=$error');
+    }
+  }
+
+  /// ★ 判断「Widget 扩展有没有被系统加载」（仅 iOS）。
+  ///
+  /// 这是灵动岛不显示时**最关键**的一个判据。`.appex` 文件在不在包里，
+  /// 与 iOS 有没有加载它是两件事 —— 侧载重签若没给嵌套的 `.appex` 单独签名，
+  /// 文件还在、系统却不加载，此时 `Activity.request` 照样成功返回，
+  /// 但屏幕上什么都不出现。
+  ///
+  /// 判据：`extensionLoaded=false` ⇒ 扩展没被加载，问题在签名/安装方式，
+  /// 不在 ActivityKit 代码。
+  static Future<void> logIosWidgetStatus(String reason) async {
+    if (!Platform.isIOS) return;
+    try {
+      final data = await const MethodChannel('cy_shine_music/app_task')
+          .invokeMapMethod<String, dynamic>('widgetStatus')
+          .timeout(const Duration(seconds: 3));
+      if (data == null) {
+        await write('widget-status', 'reason=$reason 无返回');
+        return;
+      }
+      final loaded = data['extensionLoaded'] == true;
+      final onDisk = data['extensionOnDisk'] == true;
+      final kinds = (data['widgetKinds'] as List?)?.join(',') ?? '—';
+      await write(
+        'widget-status',
+        'reason=$reason 扩展${onDisk ? "在包内" : "缺失"} '
+            '系统加载=${loaded ? "是" : "否⚠"} '
+            '小组件数=${data['widgetConfigCount'] ?? '?'} kinds=$kinds '
+            '活动数=${data['activityCount'] ?? '?'} '
+            '实时活动开关=${data['liveActivitiesEnabled'] ?? '?'} '
+            '| ${data['verdict'] ?? ''}',
+      );
+    } catch (error) {
+      await write('widget-status', 'reason=$reason unavailable=$error');
     }
   }
 

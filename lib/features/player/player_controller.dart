@@ -1746,6 +1746,8 @@ class PlayerController extends StateNotifier<PlayerState>
       unawaited(AppLogger.logAndroidDiagnostics(state.name));
       // 切后台是锁屏卡片唯一会出现的那一刻，趁机采一次媒体会话状态。
       unawaited(AppLogger.logIosMediaSession(state.name));
+      // 同时确认 Widget 扩展有没有被系统加载 —— 灵动岛不显示时这是最硬的判据。
+      unawaited(AppLogger.logIosWidgetStatus(state.name));
       unawaited(AppLogger.flush());
     }
     if (state != AppLifecycleState.resumed) {
